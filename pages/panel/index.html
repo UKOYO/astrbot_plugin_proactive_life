@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>自主生活</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <!-- 粒子动态背景（原生 Canvas，无外部依赖） -->
+  <canvas id="bgCanvas" class="bg-canvas" aria-hidden="true"></canvas>
+
+  <!-- 框外若隐若现的模糊大字 -->
+  <div class="ghost-words" aria-hidden="true">
+    <span class="ghost ghost--1">自主</span>
+    <span class="ghost ghost--2">生活</span>
+    <span class="ghost ghost--3">中枢</span>
+    <span class="ghost ghost--4">叙事</span>
+  </div>
+
+  <!-- 框外黑色磨砂玻璃：只模糊/压暗框外，框内保持清晰 -->
+  <div class="frost" aria-hidden="true"></div>
+
+  <!-- 细线边框，模拟参考站的 frame -->
+  <div class="frame" aria-hidden="true">
+    <span class="frame__line frame__line--l"></span>
+    <span class="frame__line frame__line--r"></span>
+    <span class="frame__line frame__line--t"></span>
+    <span class="frame__line frame__line--b"></span>
+  </div>
+
+  <div class="zoomer" id="zoomer">
+    <button type="button" class="zoomer__btn" id="zoomOut" title="缩小">−</button>
+    <span class="zoomer__val" id="zoomVal">100%</span>
+    <button type="button" class="zoomer__btn" id="zoomIn" title="放大">＋</button>
+  </div>
+
+  <!-- 左侧固定导览 -->
+  <header class="siteHeader">
+    <h1 class="siteHeader__title">自主<br />生活</h1>
+    <p class="siteHeader__label">中枢观测 · 面板</p>
+    <nav class="siteHeader__nav" id="tabs" aria-label="面板分区">
+      <ol>
+        <li data-tab="overview" class="is-selected"><span class="_dot">●</span><span class="_text text-btn">总览</span></li>
+        <li data-tab="private"><span class="_dot">●</span><span class="_text text-btn">私聊</span></li>
+        <li data-tab="group"><span class="_dot">●</span><span class="_text text-btn">群聊</span></li>
+        <li data-tab="worker"><span class="_dot">●</span><span class="_text text-btn">摸鱼</span></li>
+        <li data-tab="rhythm"><span class="_dot">●</span><span class="_text text-btn">节奏</span></li>
+        <li data-tab="schedule"><span class="_dot">●</span><span class="_text text-btn">日程</span></li>
+        <li data-tab="debounce"><span class="_dot">●</span><span class="_text text-btn">防抖</span></li>
+        <li data-tab="context"><span class="_dot">●</span><span class="_text text-btn">上下文</span></li>
+      </ol>
+    </nav>
+    <div class="pulse">
+      <span class="pulse__dot" id="loopDot" data-state="unknown"></span>
+      <span class="pulse__text" id="loopText">读取中</span>
+    </div>
+  </header>
+
+  <!-- 左侧竖排主题开关 -->
+  <div class="theme-switch" id="themeSwitch">
+    <button type="button" class="theme-btn is-selected" data-theme-set="light"><span class="_box"></span>浅色</button>
+    <button type="button" class="theme-btn" data-theme-set="dark"><span class="_box"></span>深色</button>
+    <button type="button" class="theme-btn" data-theme-set="mono"><span class="_box"></span>等宽</button>
+  </div>
+
+  <!-- 右侧竖排滚动提示 -->
+  <div class="scroll-watch" aria-hidden="true">
+    <span class="scroll-watch__label">SCROLL WATCH</span>
+    <span class="scroll-watch__bar"><i id="scrollBar"></i></span>
+  </div>
+
+  <!-- 右侧内容 -->
+  <main class="content">
+    <div class="content__inner">
+
+      <!-- 顶部指标 -->
+      <dl class="metrics">
+        <div class="metric"><dt>下次轮询</dt><dd id="mNext">—</dd></div>
+        <div class="metric"><dt>调度间隔</dt><dd id="mInterval">—</dd></div>
+        <div class="metric"><dt>免打扰</dt><dd id="mQuiet">—</dd></div>
+        <div class="metric"><dt>此刻</dt><dd id="mNow" class="time">—</dd></div>
+      </dl>
+
+      <div class="panel-view is-active" id="view-overview" data-view="overview">
+        <div id="conflictBox" class="conflict"></div>
+
+        <section class="sec">
+          <h2 class="sec__head"><span>最近活动</span><em class="hint">主动/破冰/摸鱼/追问</em></h2>
+          <div id="activityList" class="activity"></div>
+        </section>
+
+        <section class="sec">
+          <h2 class="sec__head"><span>私聊</span><em id="privateHint">—</em></h2>
+          <div class="cards" id="privateList"></div>
+        </section>
+
+        <section class="sec" id="groupSec">
+          <h2 class="sec__head"><span>群聊</span><em id="groupHint">—</em>
+            <button class="sec__fold text-btn" id="groupFold" type="button" aria-expanded="true">收起</button>
+          </h2>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>群</th><th>上次发言</th><th>冷却</th><th>静默</th>
+                  <th>饥饿</th><th>上下文</th><th>活跃</th>
+                </tr>
+              </thead>
+              <tbody id="groupBody">
+                <tr><td colspan="7" class="empty">读取中</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="pair">
+          <section class="sec">
+            <h2 class="sec__head"><span>节奏修剪</span></h2>
+            <div id="rhythm" class="rhythm"></div>
+          </section>
+          <section class="sec">
+            <h2 class="sec__head"><span>摸鱼与心事</span></h2>
+            <div id="worker" class="worker"></div>
+          </section>
+        </div>
+
+        <section class="sec">
+          <h2 class="sec__head"><span>全局调度</span><em class="hint">改动即时落盘</em></h2>
+          <form class="conf" data-conf="core" autocomplete="off"></form>
+        </section>
+      </div><!-- /view-overview -->
+
+      <div class="panel-view" id="view-private" data-view="private">
+        <section class="sec">
+          <h2 class="sec__head"><span>私聊与追问</span><em class="hint">改动即时落盘</em></h2>
+          <form class="conf" data-conf="private" autocomplete="off"></form>
+        </section>
+      </div>
+      <div class="panel-view" id="view-group" data-view="group">
+        <section class="sec">
+          <h2 class="sec__head"><span>群聊</span><em class="hint">改动即时落盘</em></h2>
+          <form class="conf" data-conf="group" autocomplete="off"></form>
+        </section>
+      </div>
+      <div class="panel-view" id="view-worker" data-view="worker">
+        <section class="sec">
+          <h2 class="sec__head"><span>摸鱼与动机</span><em class="hint">改动即时落盘</em></h2>
+          <form class="conf" data-conf="worker" autocomplete="off"></form>
+        </section>
+      </div>
+      <div class="panel-view" id="view-rhythm" data-view="rhythm">
+        <section class="sec">
+          <h2 class="sec__head"><span>节奏修剪</span><em class="hint">改动即时落盘</em></h2>
+          <form class="conf" data-conf="rhythm" autocomplete="off"></form>
+        </section>
+      </div>
+      <div class="panel-view" id="view-schedule" data-view="schedule">
+        <section class="sec">
+          <h2 class="sec__head"><span>今日日程</span><em id="scheduleHint" class="hint">—</em></h2>
+          <div id="scheduleView" class="schedule"></div>
+          <div class="acts schedule__acts">
+            <button type="button" class="act text-btn" data-act="schedule_generate">重新生成</button>
+          </div>
+          <div class="schedule__edit">
+            <label class="schedule__label">补充要求（可选，生成时作最高优先级约束）</label>
+            <input id="scheduleExtra" type="text" placeholder="例如：今天下雨，别安排出门；穿红色连衣裙" />
+          </div>
+        </section>
+
+        <section class="sec">
+          <h2 class="sec__head"><span>生成设置</span><em class="hint">提示词与服装库</em></h2>
+          <form class="conf" data-conf="schedule" autocomplete="off"></form>
+        </section>
+
+        <section class="sec">
+          <h2 class="sec__head"><span>改写日程</span><em class="hint">保存后各链路直接使用</em></h2>
+          <div class="schedule__edit">
+            <label class="schedule__label">今日穿搭</label>
+            <textarea id="scheduleOutfit" rows="3" placeholder="风格：xxx&#10;- 外套：…"></textarea>
+            <label class="schedule__label">日程安排</label>
+            <textarea id="scheduleText" rows="8" placeholder="08:00 起床&#10;12:30 吃午饭&#10;15:00 摸鱼看番"></textarea>
+            <button type="button" class="act text-btn" id="scheduleSave">保存日程</button>
+          </div>
+        </section>
+      </div><!-- /view-schedule -->
+
+      <div class="panel-view" id="view-debounce" data-view="debounce">
+        <section class="sec">
+          <h2 class="sec__head"><span>消息防抖</span><em class="hint">多条消息合并成一批再回</em></h2>
+          <p class="lede">同一人连发几句、或多人同时艾特时，等一小段静默后合并成一段完整意思再交给模型，避免抢答与碎片回复。合并期间后续消息不单独回复。</p>
+          <form class="conf" data-conf="debounce" autocomplete="off"></form>
+        </section>
+
+        <section class="sec">
+          <h2 class="sec__head"><span>实时状态</span><em class="hint">当前合并中的会话</em></h2>
+          <div id="debounceStats" class="dstats"></div>
+        </section>
+      </div>
+
+      <div class="panel-view" id="view-context" data-view="context">
+        <section class="sec">
+          <h2 class="sec__head"><span>上下文</span><em class="hint">场景感知 · 说话风格</em></h2>
+          <p class="lede">分析「谁在跟谁说话」避免抢答，并调节说话风格（话多/沉默/吐槽）。场景分析为纯规则；短期总结按需调用模型。</p>
+          <form class="conf" data-conf="context" autocomplete="off"></form>
+          <div id="contextStats" class="context__stats"></div>
+          <div id="contextInfo" class="context__info"></div>
+        </section>
+      </div>
+
+      <p class="toast" id="toast" role="status"></p>
+
+      <footer class="foot">
+        <span id="footNote">自主生活与主动中枢</span>
+        <span id="footTime">—</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

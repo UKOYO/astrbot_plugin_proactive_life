@@ -1,0 +1,521 @@
+{
+  "模块_防抖": {
+    "type": "bool",
+    "description": "消息防抖模块总开关。关掉后不拦截任何消息，恢复逐条处理（与 smart_debounce 等插件共存时关掉本项）",
+    "default": true
+  },
+  "模块_私聊": {
+    "type": "bool",
+    "description": "私聊模块总开关。关掉后完全不监听私聊、不主动、不追问（与别的主动插件共存时用）",
+    "default": true
+  },
+  "模块_群聊": {
+    "type": "bool",
+    "description": "群聊模块总开关。关掉后完全不监听群消息、不接话、不破冰、不做闭嘴判定",
+    "default": true
+  },
+  "模块_摸鱼": {
+    "type": "bool",
+    "description": "后台摸鱼模块总开关。关掉后不会自主去网上探索，也不再往心事池沉淀",
+    "default": true
+  },
+  "模块_节奏": {
+    "type": "bool",
+    "description": "节奏修剪模块总开关。关掉后不拆条、不改标点、不补发，交给别的插件处理",
+    "default": true
+  },
+  "模块_日程": {
+    "type": "bool",
+    "description": "日程模块总开关。关掉后不自动生成日程，也不把日程/当前活动带进提示词",
+    "default": true
+  },
+  "模块_上下文": {
+    "type": "bool",
+    "description": "上下文模块总开关（场景感知/短期总结/成员印象）。关掉后不分析谁在跟谁说话、不注入场景提示",
+    "default": true
+  },
+  "全局调度间隔": {
+    "type": "int",
+    "description": "中枢节律轮询间隔（分钟），统一协调私聊、群聊与后台干活",
+    "default": 10
+  },
+  "免打扰时段": {
+    "type": "list",
+    "description": "哪些整点小时绝对不主动打扰（24小时制数字列表，如 [2, 3, 4, 5, 6]）",
+    "default": [
+      2,
+      3,
+      4,
+      5,
+      6
+    ]
+  },
+  "私聊主动_启用": {
+    "type": "bool",
+    "description": "是否开启私聊主动找人",
+    "default": true
+  },
+  "对谁主动": {
+    "type": "list",
+    "description": "私聊主动寻找的目标 QQ 号列表",
+    "default": [
+      "2157195950"
+    ]
+  },
+  "安静多久才找": {
+    "type": "int",
+    "description": "私聊对方安静多少分钟以上才考虑找他",
+    "default": 60
+  },
+  "最短间隔": {
+    "type": "int",
+    "description": "两次私聊主动开口之间的最短冷却时间（分钟）",
+    "default": 180
+  },
+  "每天最多几次": {
+    "type": "int",
+    "description": "每天对同一个人最多私聊主动开口次数",
+    "default": 3
+  },
+  "触发概率": {
+    "type": "float",
+    "description": "私聊主动开口的基础概率（0.0 ~ 1.0）",
+    "default": 0.55
+  },
+  "参考日程": {
+    "type": "bool",
+    "description": "私聊开口时是否读取 life_scheduler 的今日日程，让话头更贴近真实作息",
+    "default": true
+  },
+  "日程生成时间": {
+    "type": "string",
+    "description": "每天自动生成日程的时刻（HH:MM），同时作为业务日边界",
+    "default": "07:00"
+  },
+  "日程_自动生成": {
+    "type": "bool",
+    "description": "到了日程生成时间，自动用提示词生成当天穿搭与日程。关掉就只能手动生成",
+    "default": true
+  },
+  "日程_参考历史天数": {
+    "type": "int",
+    "description": "生成时参考过去几天日程，避免连续重复；同时用于让穿搭风格尽量不重样。填 0 关闭",
+    "default": 3
+  },
+  "日程_参考最近条数": {
+    "type": "int",
+    "description": "生成时参考最近多少条聊天记录（让日程贴近当前生活状态）",
+    "default": 10
+  },
+  "日程_生成模型": {
+    "type": "string",
+    "description": "生成日程使用的模型，留空跟随当前会话默认模型",
+    "default": ""
+  },
+  "日程_穿搭风格池": {
+    "type": "list",
+    "description": "服装库：每日从这些穿搭风格里挑一个作为硬约束（并尽量避开近几天用过的）。可自行增删",
+    "default": [
+      "知性学院风", "街头休闲风", "温柔淑女风", "酷飒中性风", "慵懒居家风",
+      "精致约会风", "运动活力风", "日系森女风", "法式优雅风", "韩系甜美风",
+      "复古文艺风", "极简都市风", "甜酷混搭风", "民族风情风", "暗黑系风格"
+    ]
+  },
+  "日程_提示词模板": {
+    "type": "text",
+    "description": "日程生成提示词模板，留空使用内置模板。可用占位符：{date_str} {weekday} {holiday} {persona_desc} {daily_theme} {mood_color} {outfit_style} {schedule_type} {history_schedules} {recent_chats} {recent_explorations}",
+    "default": ""
+  },
+  "参考最近聊天": {
+    "type": "bool",
+    "description": "私聊开口时是否读取最近几条聊天记录，避免重复已经聊过的话题",
+    "default": true
+  },
+  "参考几条": {
+    "type": "int",
+    "description": "参考最近聊天时取最近几条消息（太少容易驴唇不对马嘴，太多会拖慢判定）",
+    "default": 12
+  },
+  "优先消费心事动机": {
+    "type": "bool",
+    "description": "是否优先从心事池捞取最近惦记的事/刚吃到的瓜开口（杜绝干瘪汇报）",
+    "default": true
+  },
+  "模拟分段打字": {
+    "type": "bool",
+    "description": "是否像真人一样把长文本拆成短气泡分段发送",
+    "default": true
+  },
+  "分段发送延迟": {
+    "type": "float",
+    "description": "分段发送气泡之间的拟真打字延迟（秒）",
+    "default": 1.2
+  },
+  "群聊自发破冰_启用": {
+    "type": "bool",
+    "description": "是否在群聊长时间冷场时，自发带着瓜或槽点冒泡破冰",
+    "default": true
+  },
+  "群聊白名单": {
+    "type": "list",
+    "description": "额外高概率的群号列表（不是准入名单）。留空表示不额外加成，所有群仍走全局概率",
+    "default": []
+  },
+  "群聊冷场判定时间": {
+    "type": "int",
+    "description": "默认群内静默多少分钟以上判定为冷场（建议 120~180 分钟）",
+    "default": 120
+  },
+  "群聊自发破冰概率": {
+    "type": "float",
+    "description": "默认冷场时带着新鲜话题在群里冒泡的概率（0.0 ~ 1.0）",
+    "default": 0.35
+  },
+  "群聊插话_启用": {
+    "type": "bool",
+    "description": "是否在群友日常聊天时无被 @ 主动插话接梗",
+    "default": false
+  },
+  "群聊插话_模式": {
+    "type": "string",
+    "description": "群聊插话模式：probability（纯概率）或 model_choice（大模型判定）",
+    "default": "probability"
+  },
+  "群聊插话_概率": {
+    "type": "float",
+    "description": "全局插话基础概率（0.0 ~ 1.0）。所有群都走这个底概率，白名单/分区群在此基础上再叠加",
+    "default": 0.05
+  },
+  "群聊白名单_概率倍数": {
+    "type": "float",
+    "description": "显式白名单里的群，在全局基础概率上乘多少倍（只对没单独配分区的群生效）。这是额外高概率，不是准入限制",
+    "default": 2.5
+  },
+  "群聊插话_判定窗口": {
+    "type": "float",
+    "description": "群聊插话的判定窗口（秒）。同一个群在这个时间内只掷一次骰子，避免刷屏把概率累加成几乎必中；填 0 则退回每 3 秒掷一次",
+    "default": 30
+  },
+  "群聊插话_冷却时间": {
+    "type": "float",
+    "description": "唯笑在某个群发过言之后，多少秒内不再主动插话（防刷屏）",
+    "default": 45
+  },
+  "群聊插话_闭嘴静默分钟": {
+    "type": "float",
+    "description": "被人喊闭嘴后静默多少分钟。群友说闭嘴/别吵/安静点这类短句就会触发，期间主动插话和冷场破冰全部停掉，但被 @ 还是照常回。填 0 关闭",
+    "default": 15.0
+  },
+  "群聊插话_嫌烦静默分钟": {
+    "type": "float",
+    "description": "群友表达嫌烦（你好烦/别刷屏/吵死了等短句）时静默多少分钟，学会看脸色闭嘴。比直接喊闭嘴的静默更短，填 0 关闭",
+    "default": 8.0
+  },
+  "群聊插话_饥饿保底条数": {
+    "type": "int",
+    "description": "连续多少条群消息都没插上嘴就触发硬保底，强制说一句（配合下面的保底间隔，填 0 关闭保底）",
+    "default": 30
+  },
+  "群聊插话_保底最短间隔": {
+    "type": "int",
+    "description": "硬保底生效前，距上次在该群发言至少间隔多少分钟（避免刚说完又强行冒泡）",
+    "default": 12
+  },
+  "群聊接话_最短间隔": {
+    "type": "float",
+    "description": "群友接你的话时，两次接茬之间的最短间隔（秒），防止一群人同时回你时连发刷屏",
+    "default": 8
+  },
+  "群聊插话_诊断日志": {
+    "type": "bool",
+    "description": "是否输出群插话诊断日志（每群 10 分钟最多一条，说明卡在冷却/白名单/掷骰未中），排障时打开",
+    "default": true
+  },
+  "群聊独立分区配置": {
+    "type": "template_list",
+    "description": "按群定制概率分区与冷场阈值。未特别定制的群自动继承默认全局值",
+    "default": [],
+    "templates": {
+      "partition": {
+        "name": "群专属分区配置",
+        "items": {
+          "group_id": {
+            "description": "群号",
+            "type": "string",
+            "default": ""
+          },
+          "icebreak_prob": {
+            "description": "冷场破冰概率 (0.0~1.0)",
+            "type": "float",
+            "default": 0.35
+          },
+          "chitchat_prob": {
+            "description": "日常插话概率 (0.0~1.0)",
+            "type": "float",
+            "default": 0.05
+          },
+          "idle_minutes": {
+            "description": "冷场静默判定时间 (分钟)",
+            "type": "int",
+            "default": 120
+          }
+        }
+      }
+    }
+  },
+  "群聊判定模型": {
+    "type": "string",
+    "description": "群聊大模型插话判定时使用的模型提供者 ID（留空使用默认）",
+    "default": ""
+  },
+  "场景感知_启用": {
+    "type": "bool",
+    "description": "群聊场景感知：分析谁在跟谁说话、是否被叫，主动接话时避免把别人之间的对话当成问自己（抢答）。纯规则、无额外模型开销",
+    "default": true
+  },
+  "场景感知_让位contextaware": {
+    "type": "bool",
+    "description": "如果原 astrbot_plugin_context_aware 正在启用，本中枢不再重复注入 <conversation_scene>，避免 LLM 收到两份重叠提示。若已停用原插件，请关掉此项让本插件接管",
+    "default": true
+  },
+  "场景感知_对话窗口": {
+    "type": "int",
+    "description": "每次接话时注入到场景提示的最近对话流条数（谁→谁）。越大上下文越全，但占位越多，建议 4~10",
+    "default": 8
+  },
+  "场景感知_显示对话流": {
+    "type": "bool",
+    "description": "是否在场景提示里列出「谁→谁」的最近对话流。关掉只保留当前消息与行为指导",
+    "default": true
+  },
+  "场景感知_严格模式": {
+    "type": "bool",
+    "description": "主动插入场景强制判为「对群里说」，不根据上下文推断成在跟 Bot 说话，进一步降低抢答/误答",
+    "default": false
+  },
+  "场景感知_回复特征词": {
+    "type": "list",
+    "description": "Bot 刚回过你之后，哪些短句算「在回应 Bot」，例如 好的/嗯/谢谢。留空使用内置默认词表",
+    "default": []
+  },
+  "场景感知_调试推断": {
+    "type": "bool",
+    "description": "把对话对象推断结果写入 debug 日志，便于排查为什么没接话/抢答",
+    "default": false
+  },
+  "场景感知_总结启用": {
+    "type": "bool",
+    "description": "短期总结：每几轮背景提炼群聊里的偏好/约束、纠正、已定事项、待办，接话时连同对话流一起注入，让 Bot 记得聊过什么。失败自动降级，不影响接话",
+    "default": true
+  },
+  "场景感知_总结每N条": {
+    "type": "int",
+    "description": "累计多少条群消息触发一次总结（最少 4）。越大越省模型调用，但记新东西更慢",
+    "default": 12
+  },
+  "场景感知_总结间隔秒": {
+    "type": "int",
+    "description": "两次总结的最小间隔秒数（最少 30），防止高频群反复调用模型",
+    "default": 180
+  },
+  "场景感知_总结条数": {
+    "type": "int",
+    "description": "每次注入场景提示时，每类笔记最多列几条（总字数另有上限）",
+    "default": 6
+  },
+  "场景感知_总结模型": {
+    "type": "string",
+    "description": "总结专用的模型 Provider ID，留空则跟随当前会话使用的模型。可用响应快的模型省成本",
+    "default": ""
+  },
+  "拟人_话多程度": {
+    "type": "int",
+    "description": "群聊接话的话多程度（0~100）。低=惜字如金只说一句，高=话多爱接、愿意多聊两句",
+    "default": 50
+  },
+  "拟人_沉默倾向": {
+    "type": "int",
+    "description": "群聊接话的沉默倾向（0~100）。高=没想法就安静、少凑热闹，低=乐于回应每句。也会微调接话概率",
+    "default": 45
+  },
+  "拟人_吐槽强度": {
+    "type": "int",
+    "description": "吐槽/毒舌强度（0~100）。低=温和附和，高=爱吐槽抖机灵但不过分冒犯",
+    "default": 50
+  },
+  "防抖_群聊启用": {
+    "type": "bool",
+    "description": "群聊防抖：多人在短时间内艾特/唤醒时，合并成一批一次性回复，避免抢答和碎片回复",
+    "default": true
+  },
+  "防抖_私聊启用": {
+    "type": "bool",
+    "description": "私聊防抖：对方连发几条时合并成一条一起理解，避免只回最后半句",
+    "default": true
+  },
+  "防抖_群聊等待秒": {
+    "type": "float",
+    "description": "群聊静默多少秒后认为这一批说完了（每来一条新消息就重新计时）",
+    "default": 1.2
+  },
+  "防抖_群聊最长等待秒": {
+    "type": "float",
+    "description": "群聊一批最多等多久，防止有人一直刷导致永远不回复",
+    "default": 2.5
+  },
+  "防抖_私聊等待秒": {
+    "type": "float",
+    "description": "私聊静默多少秒后合并发送（私聊窗口更短，等太久会觉得卡）",
+    "default": 0.8
+  },
+  "防抖_私聊最长等待秒": {
+    "type": "float",
+    "description": "私聊一批最多等多久",
+    "default": 1.5
+  },
+  "防抖_单次图片上限": {
+    "type": "int",
+    "description": "一批消息里最多带几张图给模型，超出的省略并注明",
+    "default": 5
+  },
+  "防抖_情绪拆分": {
+    "type": "bool",
+    "description": "情绪倾诉和正经提问分开成两批，避免语气互相污染（仅群聊）",
+    "default": true
+  },
+  "防抖_过滤表情包": {
+    "type": "bool",
+    "description": "过滤无意义表情包/贴图，减少无谓的图片请求；当消息明确在问图时仍会保留",
+    "default": true
+  },
+  "防抖_锁超时秒": {
+    "type": "float",
+    "description": "合并会话的锁最长占用多少秒，超时自动释放，避免异常时永久卡死",
+    "default": 15.0
+  },
+  "拟人_成员印象": {
+    "type": "bool",
+    "description": "累积群成员的说话习惯印象（常找你/爱提问/爱发图/说话长短），接话时带上当前发言人的印象，让回应因人而异。纯统计、有上限、重启清空",
+    "default": true
+  },
+  "拟人_情绪启用": {
+    "type": "bool",
+    "description": "跨轮情绪：被冷落会有点委屈、被回应会开心、被喊闭嘴会闷闷的、摸鱼有收获会兴致高。只影响说话语气，不改变是否开口的调度。纯规则、内存存储、重启清空",
+    "default": true
+  },
+  "拟人_情绪衰减小时": {
+    "type": "float",
+    "description": "情绪多久自然衰减回「平静」（小时）。越短越健忘，越容易被当下的事影响；改后需重载插件生效",
+    "default": 3.0
+  },
+  "拟人_动机多样化": {
+    "type": "bool",
+    "description": "没有心事可用时，从内置动机（想念/无聊/报备/分享/小情绪/关心）里随机挑一个作为开口方向，避免每次都是同一句「摸鱼发呆」",
+    "default": true
+  },
+  "后台摸鱼_启用": {
+    "type": "bool",
+    "description": "是否在空闲时自主去网络冲浪探索吃瓜，并沉淀为动机话题",
+    "default": true
+  },
+  "摸鱼干活最短间隔": {
+    "type": "int",
+    "description": "两次后台摸鱼干活之间的冷却时间（分钟）",
+    "default": 240
+  },
+  "摸鱼干活概率": {
+    "type": "float",
+    "description": "空闲时触发摸鱼干活的概率",
+    "default": 0.4
+  },
+  "摸鱼_搜索方向": {
+    "type": "text",
+    "description": "自定义摸鱼时让模型搜索/关注的方向，可多行写多条（如：今天的 AI 新模型、某个游戏更新、某领域新闻）。留空则使用内置的 AI 前沿/热点/番剧/社媒默认方向",
+    "default": ""
+  },
+  "摸鱼_搜索方向_模式": {
+    "type": "string",
+    "description": "自定义搜索方向与内置默认的关系：replace=只用你填的；append=优先你填的，也保留内置默认做补充",
+    "default": "replace"
+  },
+  "私聊追问_启用": {
+    "type": "bool",
+    "description": "是否在提出疑问/话题未得到回复时，短时间内主动追问/戳一下对方",
+    "default": true
+  },
+  "追问等待秒数": {
+    "type": "int",
+    "description": "提出疑问后等待多少秒未回复则触发追问（默认300秒，即5分钟）",
+    "default": 300
+  },
+  "追问最多次数": {
+    "type": "int",
+    "description": "同一个未答复问题最多追问几次（建议1次，防止过度打扰）",
+    "default": 1
+  },
+  "追问过期秒数": {
+    "type": "int",
+    "description": "提问超过多少秒未回复判定为对方走开，放弃追问转入常规静默（默认1800秒，即30分钟）",
+    "default": 1800
+  },
+  "节奏_启用": {
+    "type": "bool",
+    "description": "【真人节奏】是否在消息发出前按真人长度与标点修剪",
+    "default": true
+  },
+  "节奏_处理方式": {
+    "type": "string",
+    "description": "【真人节奏】怎么处理超长回复：split=拆条发送；punctuation=只改标点；trim=直接截断",
+    "default": "split"
+  },
+  "节奏_每段字数": {
+    "type": "int",
+    "description": "【真人节奏】每段目标字数（实测真人多在20~45字）",
+    "default": 45
+  },
+  "节奏_最多几条": {
+    "type": "int",
+    "description": "【真人节奏】一条回复最多拆成几条",
+    "default": 5
+  },
+  "节奏_间隔秒数": {
+    "type": "float",
+    "description": "【真人节奏】分段补发之间的停顿秒数（0=连发）",
+    "default": 0.2
+  },
+  "节奏_去句末标点": {
+    "type": "bool",
+    "description": "【真人节奏】去掉句末句号与感叹号（问号保留）",
+    "default": true
+  },
+  "节奏_去颜文字": {
+    "type": "bool",
+    "description": "【真人节奏】去掉颜文字，减少 AI 味",
+    "default": true
+  },
+  "节奏_表格代码不拆": {
+    "type": "bool",
+    "description": "【真人节奏】含代码块、表格、列表的回复整条不动",
+    "default": true
+  },
+  "节奏_花括号不拆": {
+    "type": "bool",
+    "description": "【真人节奏】{}动作神态整块不切开",
+    "default": true
+  },
+  "节奏_只对群聊": {
+    "type": "bool",
+    "description": "【真人节奏】只对群聊处理（关掉则私聊也处理）",
+    "default": false
+  },
+  "节奏_打印处理详情": {
+    "type": "bool",
+    "description": "【真人节奏】日志打印处理详情（多少字拆成几条）",
+    "default": true
+  },
+  "节奏_演练模式": {
+    "type": "bool",
+    "description": "【真人节奏】演练模式（只打日志不真改）",
+    "default": false
+  }
+}

@@ -1,0 +1,603 @@
+import asyncio
+import json
+import random
+import re
+import time
+from datetime import datetime
+from pathlib import Path
+
+
+from astrbot.api import logger
+from astrbot.core.cron.events import CronMessageEvent
+from astrbot.core.message.components import Plain
+from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.platform.message_session import MessageSession
+
+from .common import DEFAULT_TARGET_UID, scheduler_data_path, parse_quiet_hours
+from .handler_base import HandlerContextMixin
+from .agent_runner import (
+    build_agent_config, make_request, attach_history, run_agent,
+)
+
+_WAKE_PROMPT = """【时间与情境】
+- 当前时间：{now_str}（{period_desc}）
+- 优可约 {silent_min} 分钟没说话了，你手头正好有点空。
+{mood_hint}
+【核心开口动机与背景（关键引导）】
+{motive_instruction}
+
+【开口规范（彻底杜绝二次元早报与汇报腔）】
+1. 像真人单手在手机九宫格摸鱼打字：
+   - 随性、口语、短碎，说完就停。严禁输出「我在哪+在做什么+给Last Eden攒素材+问对方在干嘛」这种三段式近况汇报！
+   - 严禁把私聊当成新闻早报！绝对禁止机械套用「说起来 刚才搜了/刷到了...」「草 才发现...」这种格式搬运资讯；
+   - 日常就是个窝在电竞椅里的随性死宅兼恋人，生活碎念远比搬运二手新闻更自然。
+2. 聊具体的事，有明确目的感与真实体感：
+   - 如果有【心事/话题】，必须像真人随口聊天一样自然提及，严禁背新闻稿，若觉得太生硬可直接放弃改聊日常；
+   - 优先聊当下真实的生理与生活体感（刚醒开机困难、纠结午饭点什么、外卖慢了、房间有点冷、画图眼睛酸、游戏卡关破防）；
+   - 也可以像情侣日常一样单纯随手戳他一下、甩个吐槽或小牢骚。
+3. 纯第一人称台词，严禁动作括号内心戏，绝不解释为什么发消息。"""
+
+_NUDGE_PROMPT = """【时间与情境】
+- 当前时间：{now_str}（{period_desc}）
+- 刚才你在私聊里对优可说了/抛出了下面的话题或提问，但他已经约 {elapsed_min} 分钟没有回复了，对话卡在这儿。
+{mood_hint}
+【刚才你的发言/抛出的问题】
+「{question}」
+
+【追问动机与要求】
+1. 你心里挂念着刚才的话题，或者被放置了一会儿，有点小情绪、傲娇，好奇他怎么卡住了；
+2. 像情侣日常闲聊一样，顺着刚才没答完的话题自然追问一句、戳他一下（比如「人呢，真卡壳了？」「快说，到底选哪个」「装死是吧」「怎么突然不吱声了」）；
+3. 像真人单手在手机九宫格摸鱼打字：短碎、口语、随性，说完就停，严禁机械长篇大论，纯第一人称台词，严禁动作括号内心戏，绝不解释为什么发消息。"""
+
+# 当前活动关键词 -> 可聊的方向（日程驱动，只作为建议）
+_ACTIVITY_TOPICS = (
+    (("游戏", "开黑", "排位", "副本", "上分", "steam"), "游戏卡关、上分破防或队友"),
+    (("吃", "饭", "外卖", "午餐", "晚餐", "早餐", "零食", "泡面"), "吃了什么、想吃什么"),
+    (("番", "动画", "剧", "电影"), "刚看的那集/剧情"),
+    (("画", "稿", "绘画", "画图"), "画画卡住或赶稿"),
+    (("睡", "醒", "起床", "午睡", "躺"), "困、刚醒或没睡够"),
+    (("工作", "上班", "开会", "加班"), "上班摸鱼或累"),
+    (("看", "直播", "视频", "B站", "冲浪"), "刚刷到的内容"),
+    (("书", "读", "学习"), "在看的东西"),
+)
+
+# 没心事可用时的内置开口动机（避免每次都是同一句「摸鱼发呆」）
+_BUILTIN_MOTIVES = (
+    ("想念", "隔了一阵没说话，忽然有点想他，想随便戳他一下。"),
+    ("无聊", "手头正好没事，闲得有点发慌，想找个人说句话。"),
+    ("报备", "刚做完一件小事（刚吃完/刚收拾完/刚洗完澡），想随口说一声。"),
+    ("分享", "刚碰到一件有意思的小事，想随口吐槽一句。"),
+    ("小情绪", "想起他上次说的某句话，还有点在意，想提一嘴。"),
+    ("关心", "不知道他这会儿在干嘛、吃没吃饭，有点想问一句。"),
+)
+
+
+def _quiet_hours(raw) -> list[int]:
+    """把免打扰时段配置解析成小时数列表（统一走 common，避免多份实现漂移）。"""
+    return parse_quiet_hours(raw)
+
+
+def _period_desc(now: datetime) -> str:
+    h = now.hour
+    w = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
+    if 5 <= h < 9:
+        return f"{w}清晨（刚醒开机/准备出门/早班路上）"
+    if 9 <= h < 11:
+        return f"{w}上午（工位摸鱼/早会大概刚完）"
+    if 11 <= h < 13:
+        return f"{w}中午（准备觅食点外卖/午休摸鱼）"
+    if 13 <= h < 17:
+        return f"{w}下午（容易犯困/下午茶摸鱼/盯屏幕发呆）"
+    if 17 <= h < 19:
+        return f"{w}傍晚（快下班/晚高峰/觅食途中）"
+    if 19 <= h < 23:
+        return f"{w}晚间（自由活动/洗漱/打游戏推Gal/看番）"
+    return f"{w}深夜（夜猫子冲浪/熬夜修仙/该睡没睡）"
+
+
+def _split_message(text: str, target: int = 26, max_segments: int = 4) -> list[str]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    sents = [s for s in re.split(r"(?<=[。！？!?…\n])", text) if s.strip()]
+    pieces = []
+    for s in sents:
+        s = s.strip()
+        if len(s) <= int(target * 1.5):
+            pieces.append(s)
+            continue
+        subs = [x for x in re.split(r"(?<=[，,；;、])", s) if x.strip()]
+        buf = ""
+        for sub in subs:
+            if len(buf) + len(sub) <= target:
+                buf += sub
+            else:
+                if buf:
+                    pieces.append(buf.strip())
+                buf = sub
+        if buf.strip():
+            pieces.append(buf.strip())
+    merged = []
+    for p in pieces:
+        if not p:
+            continue
+        if merged and len(merged[-1]) + len(p) <= target:
+            merged[-1] = merged[-1] + " " + p
+        else:
+            merged.append(p)
+    if len(merged) > max_segments:
+        head = merged[: max_segments - 1]
+        tail = "".join(merged[max_segments - 1:])
+        merged = head + [tail]
+    return [m.strip() for m in merged if m.strip()]
+
+
+def _strip_trailing_punct(text: str) -> str:
+    out = text.rstrip()
+    while out and out[-1] in "。！!.":
+        out = out[:-1].rstrip()
+    return out
+
+
+def _clean_spoken_text(text: str) -> str:
+    t = re.sub(r"```[\s\S]*?```", "", text)
+    t = re.sub(r"\{[^{}]*\}", "", t)
+    t = re.sub(r"（[^（）]*）|\([^()]*\)", "", t)
+    t = re.sub(r"\[dir:\d+\]", "", t)
+    t = re.sub(r"\[Image Attachment:.*?\]", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _is_inquiry(text: str) -> bool:
+    """启发式检测唯笑发言是否属于提问、促使对方表态或挂念的话题（升级版，兼容无标点短句口白）。"""
+    t = text.strip()
+    if not t:
+        return False
+    # 1. 显式问号
+    if "?" in t or "？" in t:
+        return True
+
+    # 2. 核心疑问与促问关键词（扩充了口白中常见的无问号疑问）
+    prompt_keywords = [
+        "选哪个", "选什么", "哪一个", "怎么看", "怎么说", "行不行", "对不对", "好不好",
+        "快说", "从实招来", "老实交代", "你说呢", "你觉得", "人呢", "去哪了", "在干嘛",
+        "是不是", "到底选", "到底怎么", "给个话", "理我一下", "别装死", "装死是吧",
+        "回答我", "说实话", "招不招", "怎么样", "如何", "要不要", "打算", "哪种",
+        "认不认", "接不接", "去不去", "看不看", "想不想", "能不能", "可不可",
+        "成不成", "哪样", "哪天", "几点", "什么情况", "谁家", "啥样", "啥时候"
+    ]
+    if any(kw in t for kw in prompt_keywords):
+        return True
+
+    # 3. 句末语气词表态识别（兼容正文句末不打终止符号的人设风格）
+    # 截取最后一句或最后几个字
+    last_clause = re.split(r"[,，\s\n]", t)[-1].strip()
+    if last_clause and len(last_clause) >= 2:
+        # 句末以疑问语气助词收尾
+        if any(last_clause.endswith(suffix) for suffix in ("呢", "吗", "么", "吧", "哈")):
+            # 排除非疑问固定词（比如“好吧”、“行吧”）
+            if last_clause not in ("好吧", "行吧", "算了吧", "走吧", "去吧", "这样吧"):
+                return True
+        # “看看...”、“试试...”式征求意见
+        if last_clause.startswith(("看看", "瞧瞧", "如何", "怎么样")):
+            return True
+
+    return False
+
+
+class PrivateProactiveHandler(HandlerContextMixin):
+    def __init__(self, context, cfg: dict, motive_mgr, state_file: Path):
+        self.context = context
+        self.cfg = cfg
+        self.motive_mgr = motive_mgr
+        self.state_file = state_file
+        self.state = {
+            "last_user_msg": {},
+            "last_active": {},
+            "daily": {},
+            "pending_inquiries": {},
+        }
+        # 由插件主类注入：写面板活动日志、跨轮情绪
+        self.activity_logger = None
+        self.mood_store = None
+        self._load_state()
+
+    def update_config(self, cfg: dict):
+        self.cfg = cfg
+
+    # ------------------------------------------------------------ 内置开口动机
+    def _builtin_motive(self) -> tuple[str, str]:
+        """没心事可用时挑一个内置动机类型，避免每次同一句开场。"""
+        try:
+            if not bool(self.cfg.get("拟人_动机多样化", True)):
+                return "", ""
+            kind, text = random.choice(_BUILTIN_MOTIVES)
+            return kind, text
+        except Exception:
+            return "", ""
+
+    # ------------------------------------------------------------ 日程驱动开口方向
+    def _activity_hint(self) -> str:
+        """用日程的「此刻在做」给出可聊方向；只读取，失败返回空串。"""
+        if not self._module_on("日程"):
+            return ""
+        try:
+            from .common import read_schedule
+            st = str(self.cfg.get("日程生成时间", "00:00") or "00:00")
+            act = str(read_schedule(st).get("current_activity") or "").strip()
+            if not act:
+                return ""
+            # 只在开头的描述里匹配关键词：日程条目常是长句，后段可能提到别的事
+            head = act[:60]
+            topic = ""
+            for kws, t in _ACTIVITY_TOPICS:
+                if any(k in head for k in kws):
+                    topic = t
+                    break
+            short = act[:36] + ("…" if len(act) > 36 else "")
+            if topic:
+                return f"【此刻的生活场景】你正在「{short}」，适合顺口聊{topic}；不想聊就忽略。\n"
+            return f"【此刻的生活场景】你正在「{short}」，可以顺口提一句；不想提就忽略。\n"
+        except Exception:
+            return ""
+
+    def _load_state(self):
+        try:
+            if self.state_file.exists():
+                self.state = json.loads(self.state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as e:
+            logger.warning("proactive_life | 私聊状态读取失败，按空状态启动: %s", e)
+        for k in ("last_user_msg", "last_active", "daily", "pending_inquiries"):
+            self.state.setdefault(k, {})
+
+    def _save_state(self, raise_on_error: bool = False):
+        # 先写临时文件再 replace：直接 write_text 覆盖，进程在写一半时被杀
+        # 会留下半截 JSON，下次 _load_state 解析失败就把整份状态清零
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_file.with_name(self.state_file.name + ".tmp")
+            tmp.write_text(
+                json.dumps(self.state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self.state_file)
+        except (OSError, TypeError, ValueError) as e:
+            logger.warning("proactive_life | 私聊状态落盘失败: %s", e)
+            if raise_on_error:
+                raise
+
+    def record_user_message(self, uid: str):
+        uid_str = str(uid)
+        self.state["last_user_msg"][uid_str] = time.time()
+        # 优可回消息了，自动清除该用户的待追问挂念
+        if "pending_inquiries" in self.state and uid_str in self.state["pending_inquiries"]:
+            self.state["pending_inquiries"].pop(uid_str, None)
+            logger.info("proactive_life | 优可已回复消息，解除待追问挂念 -> %s", uid_str)
+        self._save_state()
+        # 被回应了，情绪转好
+        self._mood_apply(uid_str, "replied", "对方回消息")
+
+    def record_bot_message(self, uid: str, text: str):
+        """记录唯笑发送给用户的私聊消息，若有疑问或挂念则注册待追问任务"""
+        uid_str = str(uid)
+        targets = [str(x) for x in (self.cfg.get("对谁主动") or [DEFAULT_TARGET_UID])]
+        if uid_str not in targets:
+            return
+
+        clean_txt = _clean_spoken_text(text)
+        if _is_inquiry(clean_txt):
+            self.state.setdefault("pending_inquiries", {})
+            self.state["pending_inquiries"][uid_str] = {
+                "question": clean_txt[:300],
+                "asked_at": time.time(),
+                "nudged_count": 0,
+            }
+            self._save_state()
+            logger.info("proactive_life | 记录待追问话题 -> %s: %s", uid_str, clean_txt[:50])
+
+    def _resolve_umo(self, uid: str) -> str:
+        try:
+            for inst in self.context.platform_manager.get_insts():
+                meta = getattr(inst, "metadata", None)
+                pid = getattr(meta, "id", None) if meta else None
+                if pid:
+                    return f"{pid}:FriendMessage:{uid}"
+        except (OSError, AttributeError, TypeError) as e:
+            logger.debug("proactive_life | 平台实例读取失败，回退默认 UMO: %s", e)
+        return f"aiocqhttp:FriendMessage:{uid}"
+
+    def _read_schedule(self) -> str:
+        """读取日程并提炼当前生活状态，供开口参考（只读取，不生成）。"""
+        if not self._module_on("日程"):
+            return ""
+        try:
+            from .common import ScheduleReader
+            st = str(self.cfg.get("日程生成时间", "00:00") or "00:00")
+            info = ScheduleReader(schedule_data_path(), st).read()
+            if not info.get("schedule"):
+                return ""
+            bits = []
+            if info.get("outfit"):
+                bits.append(f"今日穿搭：{info['outfit']}")
+            if info.get("current_activity"):
+                bits.append(f"此刻在做：{info['current_activity']}")
+            bits.append(f"今日日程：\n{info['schedule'][:500]}")
+            return "【生活状态】" + "\n".join(bits)
+        except Exception as e:
+            logger.debug("proactive_life | 日程读取失败，本次不带日程上下文: %s", e)
+            return ""
+
+    async def _read_recent(self, uid: str) -> str:
+        try:
+            umo = self._resolve_umo(uid)
+            conv_mgr = self.context.conversation_manager
+            cid = await conv_mgr.get_curr_conversation_id(umo)
+            if not cid:
+                return ""
+            conv = await conv_mgr.get_conversation(umo, cid)
+            if not conv or not conv.history:
+                return ""
+            hist = json.loads(conv.history)
+            n = max(2, int(self.cfg.get("参考几条", 12)))
+            out = []
+            for m in hist[-n:]:
+                role = m.get("role", "")
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+                if not content:
+                    continue
+                who = "优可" if role == "user" else "唯笑"
+                out.append(f"{who}: {str(content)[:160]}")
+            return "\n".join(out)
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            logger.debug("proactive_life | 最近聊天读取失败，本次不带聊天上下文: %s", e)
+            return ""
+
+    async def _execute_proactive_agent(self, uid: str, prompt_text: str, source: str) -> bool:
+        """核心执行代理：唤醒模型、打字分段发送、TTS与写入上下文历史"""
+        umo = self._resolve_umo(uid)
+        try:
+            session = MessageSession.from_str(umo)
+        except Exception as e:
+            logger.warning("proactive_life | 私聊会话 UMO 解析失败 uid=%s umo=%s: %s", uid, umo, e)
+            return False
+
+        try:
+            ev = CronMessageEvent(
+                context=self.context,
+                session=session,
+                message=prompt_text,
+                sender_id=uid,
+                sender_name="唯笑",
+            )
+
+            build_cfg = build_agent_config(self.context, umo, tool_call_timeout=120)
+            req = make_request(prompt_text)
+            await attach_history(self.context, req, umo)
+            outcome = await run_agent(self.context, ev, req, build_cfg=build_cfg, max_steps=15)
+            if not outcome.ok:
+                logger.debug("proactive_life | 私聊主动未得到有效回复：%s", outcome.reason)
+                return False
+            text = outcome.text
+
+            # 分段打字
+            simulate_typing = bool(self.cfg.get("模拟分段打字", True))
+            delay = float(self.cfg.get("分段发送延迟", 1.2))
+
+            if simulate_typing:
+                segs = _split_message(text)
+                if not segs:
+                    segs = [text]
+                for idx, seg in enumerate(segs):
+                    if idx == len(segs) - 1:
+                        seg = _strip_trailing_punct(seg)
+                    await self.context.send_message(session, MessageChain([Plain(seg)]))
+                    if idx < len(segs) - 1 and delay > 0:
+                        await asyncio.sleep(delay)
+            else:
+                await self.context.send_message(
+                    session, MessageChain([Plain(_strip_trailing_punct(text))])
+                )
+
+            # 同步写进 conversation 上下文历史
+            try:
+                from astrbot.core.proactive_history import append_proactive_message
+
+                await append_proactive_message(
+                    self.context, umo, text, source=source
+                )
+            except Exception as e_hist:
+                logger.warning("proactive_life | 写入会话历史失败: %s", e_hist)
+
+            return True
+        except Exception as e:
+            logger.warning("proactive_life | 执行主动/追问流程失败: %s", e)
+            return False
+
+    async def check_and_nudge(self, now: datetime) -> bool:
+        """检查是否有未答复的提问需要追问。返回 True 表示成功发出了追问。"""
+        if not bool(self.cfg.get("私聊追问_启用", True)):
+            return False
+
+        quiet = _quiet_hours(self.cfg.get("免打扰时段"))
+        if now.hour in quiet:
+            return False
+
+        wait_sec = int(self.cfg.get("追问等待秒数", 300))
+        max_nudges = int(self.cfg.get("追问最多次数", 1))
+        expire_sec = int(self.cfg.get("追问过期秒数", 1800))
+
+        now_ts = time.time()
+        targets = [str(x) for x in (self.cfg.get("对谁主动") or [DEFAULT_TARGET_UID])]
+
+        for uid in targets:
+            inquiry = self.state.get("pending_inquiries", {}).get(uid)
+            if not inquiry:
+                continue
+
+            asked_at = float(inquiry.get("asked_at", 0) or 0)
+            elapsed = now_ts - asked_at
+
+            # 超过过期时间，判定对方确实走开了，丢弃追问任务
+            if elapsed > expire_sec:
+                self.state["pending_inquiries"].pop(uid, None)
+                self._save_state()
+                continue
+
+            # 检查提问后用户是否发过消息
+            last_user = float(self.state.get("last_user_msg", {}).get(uid, 0) or 0)
+            if last_user > asked_at:
+                self.state["pending_inquiries"].pop(uid, None)
+                self._save_state()
+                continue
+
+            # 还没到追问等待时间
+            if elapsed < wait_sec:
+                continue
+
+            # 追问次数已达上限
+            nudged_count = int(inquiry.get("nudged_count", 0))
+            if nudged_count >= max_nudges:
+                continue
+
+            # 执行追问
+            spoken = await self._wake_and_nudge(uid, now, inquiry, elapsed)
+            if spoken:
+                inquiry["nudged_count"] = nudged_count + 1
+                inquiry["last_nudged_at"] = now_ts
+                if inquiry["nudged_count"] >= max_nudges:
+                    self.state["pending_inquiries"].pop(uid, None)
+                self._save_state()
+                return True
+        return False
+
+    async def _wake_and_nudge(
+        self, uid: str, now: datetime, inquiry: dict, elapsed: float
+    ) -> bool:
+        period_desc = _period_desc(now)
+        question = inquiry.get("question", "")
+        elapsed_min = max(1, int(elapsed / 60))
+
+        prompt_text = _NUDGE_PROMPT.format(
+            now_str=now.strftime("%H:%M"),
+            period_desc=period_desc,
+            elapsed_min=elapsed_min,
+            question=question,
+            mood_hint=self._mood_hint(uid),
+        )
+
+        ok = await self._execute_proactive_agent(uid, prompt_text, source="proactive_nudge")
+        if ok:
+            logger.info("proactive_life | 私聊追问成功发出 -> %s (已等 %d 分钟)", uid, elapsed_min)
+            self._log_activity("nudge", f"追问 {uid}（已等 {elapsed_min} 分钟）")
+            # 追问意味着被晾着，情绪偏委屈
+            self._mood_apply(uid, "ignored", "追问没回")
+        return ok
+
+    async def check_and_speak(self, now: datetime) -> bool:
+        """检查并尝试进行常规私聊主动开口。返回 True 表示成功开口。"""
+        if not bool(self.cfg.get("私聊主动_启用", True)):
+            return False
+
+        quiet = _quiet_hours(self.cfg.get("免打扰时段"))
+        if now.hour in quiet:
+            return False
+
+        targets = [str(x) for x in (self.cfg.get("对谁主动") or [DEFAULT_TARGET_UID])]
+        for uid in targets:
+            spoken = await self._check_single_user(uid, now)
+            if spoken:
+                return True
+        return False
+
+    async def _check_single_user(self, uid: str, now: datetime) -> bool:
+        last = float(self.state["last_user_msg"].get(uid, 0) or 0)
+        silent_min = (time.time() - last) / 60 if last else 9999
+        need = int(self.cfg.get("安静多久才找", 60))
+        if silent_min < need:
+            return False
+
+        la = float(self.state["last_active"].get(uid, 0) or 0)
+        since_active = (time.time() - la) / 60 if la else 9999
+        gap = int(self.cfg.get("最短间隔", 180))
+        if since_active < gap:
+            return False
+
+        today = now.strftime("%Y-%m-%d")
+        daily = self.state["daily"].get(uid, {})
+        count = int(daily.get("count", 0)) if daily.get("date") == today else 0
+        cap = int(self.cfg.get("每天最多几次", 3))
+        if count >= cap:
+            return False
+
+        p = float(self.cfg.get("触发概率", 0.55))
+        if random.random() > p:
+            return False
+
+        schedule = self._read_schedule() if bool(self.cfg.get("参考日程", True)) else ""
+        recent = await self._read_recent(uid) if bool(self.cfg.get("参考最近聊天", True)) else ""
+        period_desc = _period_desc(now)
+
+        candidate_motive = None
+        if bool(self.cfg.get("优先消费心事动机", True)) and self.motive_mgr:
+            candidate_motive = self.motive_mgr.get_candidate_for_private(recent_chat=recent)
+
+        # 私聊主动不再过模型 YES/NO 判定：概率、冷却、每日上限已经是门槛，
+        # 达到就直接开口，避免模型判定把主动权卡死。
+        return await self._wake_and_speak(uid, now, silent_min, candidate_motive, schedule, recent, period_desc, today, count)
+
+    async def _wake_and_speak(
+        self, uid: str, now: datetime, silent_min: float,
+        candidate_motive: dict | None, schedule: str, recent: str, period_desc: str,
+        today: str, count: int
+    ) -> bool:
+        if candidate_motive:
+            motive_text = candidate_motive.get("content", "")
+            motive_instruction = (
+                f"【可选的心事/灵感备选（自然随性，严禁早报复读）】\n"
+                f"你刚刚或手头正碰巧琢磨这件事：「{motive_text}」。\n"
+                f"你可以随口顺带吐槽一句；如果觉得现在聊这个太突兀或像新闻早报，也可以直接无视它，聊聊你现在的体感（如刚睡醒发呆、琢磨吃什么、天气、游戏）。"
+            )
+        else:
+            reason = []
+            if schedule:
+                reason.append(f"【你的日程与作息状态】\n{schedule[:400]}")
+            if recent:
+                reason.append(f"【最近你们聊过的话题与残留语境】\n{recent[-500:]}")
+            reason_hint = "\n\n".join(reason) if reason else "【生活状态】随性在椅子上摸鱼发呆，忽然想找优可说句话。"
+            motive_instruction = f"【生活碎碎念参考】\n{reason_hint}"
+            # 没有心事时，给一个内置的开口方向，别每次都同一句
+            kind, text = self._builtin_motive()
+            if kind:
+                motive_instruction += (
+                    f"\n【这次的开口念头（{kind}）】{text}"
+                    f"\n这只是个方向，觉得不合适就按上面的生活状态随便聊。"
+                )
+
+        # 日程驱动的开口方向（有就直接给建议，没有就跳过）
+        act_hint = self._activity_hint()
+        if act_hint:
+            motive_instruction = motive_instruction + "\n" + act_hint
+
+        prompt_text = _WAKE_PROMPT.format(
+            now_str=now.strftime("%H:%M"),
+            period_desc=period_desc,
+            silent_min=int(silent_min),
+            motive_instruction=motive_instruction,
+            mood_hint=self._mood_hint(uid),
+        )
+
+        ok = await self._execute_proactive_agent(uid, prompt_text, source="proactive_life")
+        if ok:
+            ts = time.time()
+            self.state["last_active"][uid] = ts
+            self.state["daily"][uid] = {"date": today, "count": count + 1}
+            self._save_state()
+            if candidate_motive and self.motive_mgr:
+                self.motive_mgr.mark_private_used(candidate_motive["id"])
+            logger.info("proactive_life | 私聊主动开口成功 -> %s", uid)
+            self._log_activity("private", f"主动私聊开口 → {uid}")
+            return True
+        return False
