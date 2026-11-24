@@ -63,11 +63,11 @@ def is_annoyed_signal(text: str) -> bool:
     return True
 
 
-def is_mute_request(text: str) -> bool:
-    """群友在让唯笑闭嘴。
+def is_mute_request(text: str, names: list[str] | None = None) -> bool:
+    """群友在让 Bot 闭嘴。
 
-    只认冲她来的话：短句直接算；稍微长一点的得带称呼（你/唯笑/大魔王）。
-    转述别人的（"领导让我们闭嘴"）不算。
+    只认冲 Bot 来的话：短句直接算；稍微长一点的得带「你」或 Bot 的称呼
+    （称呼从角色配置来，不写死任何人的名字）。转述别人的不算。
     """
     t = (text or "").strip().lower()
     if not t or len(t) > 24:
@@ -76,7 +76,8 @@ def is_mute_request(text: str) -> bool:
         return False
     if any(k in t for k in ("让我们", "让他们", "让他", "叫我", "叫我们", "喊我们")):
         return False
-    if len(t) > 12 and not any(k in t for k in ("你", "唯笑", "大魔王")):
+    call_words = ["你"] + [str(n).lower() for n in (names or []) if str(n).strip()]
+    if len(t) > 12 and not any(k in t for k in call_words):
         return False
     return True
 
@@ -134,12 +135,14 @@ class GroupProactiveHandler(HandlerContextMixin):
         self._last_spoke_stamp: dict[str, float] = {}
         # 记录每个群上一次掷骰时间
         self._last_roll_stamp: dict[str, float] = {}
-        # 记录唯笑在群里最近一次发言状态：{"time": ts, "text": str, "turns": int}
+        # 记录每个群上一次「命中词唤醒」接话的时间（连发保护）
+        self._keyword_last_spoke: dict[str, float] = {}
+        # 记录 Bot 在群里最近一次发言状态：{"time": ts, "text": str, "turns": int}
         # 用于支持【被回应后一段时间内自然接话】
         self._recent_bot_spoke: dict[str, dict[str, Any]] = {}
         # 连续未插话次数（饥饿补偿用）：消息一直聊但一直没插上嘴，概率要往上抬
         self._miss_streak: dict[str, int] = {}
-        # 群友在唯笑上次发言之后说过话没有：用来判断接话轮数，
+        # 群友在 Bot 上次发言之后说过话没有：用来判断接话轮数，
         # 不能拿“两条发言间隔”当轮数——分段发送会一口气把轮数刷满
         self._user_spoke_after: dict[str, bool] = {}
         # 诊断日志节流（每个群最多 10 分钟打一条，避免刷屏）
@@ -178,6 +181,7 @@ class GroupProactiveHandler(HandlerContextMixin):
             self._active_stamp,
             self._last_spoke_stamp,
             self._last_roll_stamp,
+            self._keyword_last_spoke,
             self._recent_bot_spoke,
             self._miss_streak,
             self._user_spoke_after,
@@ -345,7 +349,7 @@ class GroupProactiveHandler(HandlerContextMixin):
             logger.debug("proactive_life | 短期总结失败: %s", e)
 
     def record_bot_group_message(self, origin: str, text: str):
-        """记录唯笑在群里的发言，开启回应接话窗口"""
+        """记录 Bot 在群里的发言，开启回应接话窗口"""
         now = time.time()
         self._last_spoke_stamp[origin] = now
         # 场景窗口也记一条 Bot 发言，供「用户是否在回我」的推断使用
@@ -356,7 +360,7 @@ class GroupProactiveHandler(HandlerContextMixin):
                 last_user = win[-1] if win else None
                 bot_msg = SceneMessage(
                     sender_id=self._scene_analyzer.bot_id,
-                    sender_name="唯笑",
+                    sender_name=self._bot_name(),
                     content=(text or "")[:300],
                     timestamp=now,
                     is_bot=True,
@@ -386,7 +390,7 @@ class GroupProactiveHandler(HandlerContextMixin):
         }
         # 记录到上下文缓存
         cache = self.recent_context_cache.setdefault(origin, [])
-        cache.append({"sender": "唯笑", "text": text.strip()})
+        cache.append({"sender": self._bot_name(), "text": text.strip()})
         if len(cache) > 15:
             self.recent_context_cache[origin] = cache[-15:]
 
@@ -469,7 +473,7 @@ class GroupProactiveHandler(HandlerContextMixin):
         origin = event.unified_msg_origin
         now = time.time()
         self._active_stamp[origin] = now
-        # 群友说话了，下一条唯笑的发言才算接了一轮
+        # 群友说话了，下一条 Bot 的发言才算接了一轮
         self._user_spoke_after[origin] = True
         # 半小时顺手清一次冷群，别让这些表跟着群数一路涨
         if now - self._last_prune > 1800:
@@ -486,7 +490,7 @@ class GroupProactiveHandler(HandlerContextMixin):
                         sid = str(event.get_self_id() or "")
                     except Exception:
                         pass
-                    self._scene_analyzer.set_bot_identity(sid, ["唯笑", "大魔王"])
+                    self._scene_analyzer.set_bot_identity(sid, self._id().all_names)
                 sm = self._scene_analyzer.extract(event)
                 self._scene_analyzer.infer_addressee(sm, self._scene.recent(origin))
                 self._scene.append(origin, sm)
@@ -521,7 +525,7 @@ class GroupProactiveHandler(HandlerContextMixin):
         sender = event.get_sender_name() or str(event.get_sender_id())
 
         # 字面命中，直接静默
-        if is_mute_request(raw):
+        if is_mute_request(raw, self._id().all_names):
             minutes = float(self.cfg.get("群聊插话_闭嘴静默分钟", 15.0) or 0)
             self._mute_group(origin, minutes, sender)
             return
@@ -554,20 +558,16 @@ class GroupProactiveHandler(HandlerContextMixin):
     def _calculate_chitchat_prob(self, base_prob: float, msg_str: str) -> float:
         """
         根据群友聊天内容计算动态插话概率：
-        对死宅、二次元、游戏、修仙/熬夜、摸鱼、生草话题赋予兴趣加权
+        对配置里的「角色_兴趣关键词」命中的话题赋予兴趣加权（不写死任何兴趣）
         """
         prob = base_prob
         lower_msg = msg_str.lower()
 
-        high_interest_keywords = [
-            "gal", "galgame", "visual novel", "vn", "steam", "switch", "主机",
-            "像素", "点阵", "立绘", "脚本", "分镜", "演出", "引擎",
-            "二次元", "新番", "补番", "动漫", "漫画", "手办", "画师", "摸鱼",
-            "熬夜", "修仙", "卡文", "外卖", "破防", "笑死", "大魔王",
-            "神作", "神曲", "ost", "推完", "通关", "全成就", "掉san", "拔作"
-        ]
+        # 兴趣词完全来自配置（角色_兴趣关键词），不写死任何人的爱好；
+        # 留空时不加权，避免给别人用时强行套上原作者的兴趣。
+        high_interest_keywords = [str(k).lower() for k in self._id().interests if str(k).strip()]
 
-        if any(kw in lower_msg for kw in high_interest_keywords):
+        if high_interest_keywords and any(kw in lower_msg for kw in high_interest_keywords):
             # 兴趣加权只许抬不许压：×1.8，最高封到 0.60
             # 旧写法 min(prob*1.8, 0.20) 会把 0.20 分区直接顶回原点，等于没加成
             prob = min(prob * 1.8, 0.60)
@@ -578,7 +578,7 @@ class GroupProactiveHandler(HandlerContextMixin):
         return prob
 
     def _is_direct_reply_to_bot(self, event: AstrMessageEvent, origin: str) -> bool:
-        """检查群友消息是否直接【引用回复】了唯笑刚才的发言"""
+        """检查群友消息是否直接【引用回复】了 Bot 刚才的发言"""
         bot_spoke = self._recent_bot_spoke.get(origin)
         # 引用的是几分钟甚至几小时前的老消息，那不叫接话，别顺着翻旧账
         if not bot_spoke or time.time() - bot_spoke.get("time", 0.0) > 120.0:
@@ -590,7 +590,7 @@ class GroupProactiveHandler(HandlerContextMixin):
                 reply_sender = str(getattr(comp, "sender_id", "") or getattr(comp, "qq", "") or "")
                 if self_id and reply_sender == self_id:
                     return True
-                # 或者引用文本里包含唯笑刚才发言的片段
+                # 或者引用文本里包含 Bot 刚才发言的片段
                 if bot_spoke:
                     bot_txt = bot_spoke.get("text", "")
                     reply_txt = str(getattr(comp, "text", "") or getattr(comp, "message_str", "") or "")
@@ -600,8 +600,8 @@ class GroupProactiveHandler(HandlerContextMixin):
 
     def _is_followup_window_active(self, origin: str, msg_str: str) -> bool:
         """
-        判断是否处于唯笑刚说完话后的接话窗口（Conversation Window）：
-        - 距离唯笑上次发言在 90 秒内
+        判断是否处于 Bot 刚说完话后的接话窗口（Conversation Window）：
+        - 距离 Bot 上次发言在 90 秒内
         - 连续接话轮数 <= 2 轮（真人惰性，聊两句自然收尾，防止无休止刷屏）
         - 消息不是无意义纯符号或复读
         """
@@ -687,7 +687,7 @@ class GroupProactiveHandler(HandlerContextMixin):
     def _should_judge_mute(self, origin: str, text: str) -> bool:
         """关键词没命中的时候，值不值得让模型再看一眼。
 
-        只在唯笑刚开过口的窗口里判，而且只判短句 —— 长篇大论里出现个
+        只在 Bot 刚开过口的窗口里判，而且只判短句 —— 长篇大论里出现个
         "烦" 字八成跟她没关系。
         """
         t = (text or "").strip()
@@ -717,9 +717,9 @@ class GroupProactiveHandler(HandlerContextMixin):
         prompt = (
             f"群里最近几条消息：\n{ctx}\n\n"
             f"现在这条：{msg}\n\n"
-            "问题：这句话是不是在嫌唯笑（群里一个话偏多的成员）话多、"
-            "让她闭嘴、别插话、安静一会儿？\n"
-            "如果是在转述别人的话、在开玩笑、或者说的根本不是她，一律算 NO。\n"
+            f"问题：这句话是不是在嫌{self._bot_name()}（群里一个话偏多的成员）话多、"
+            "让 Bot 闭嘴、别插话、安静一会儿？\n"
+            "如果是在转述别人的话、在开玩笑、或者说的根本不是 Bot，一律算 NO。\n"
             "只回 YES 或 NO。"
         )
         try:
@@ -793,6 +793,23 @@ class GroupProactiveHandler(HandlerContextMixin):
         "- 带链接的消息基本是别的 bot 在发推送，当没看见，不点开不复述。"
     )
 
+    def _keyword_filter(self, event: AstrMessageEvent, origin: str) -> str | None:
+        """命中词唤醒专用的前置过滤：允许 @Bot，但仍挡链接/卡片/指令/静默。"""
+        raw = (event.message_str or "").strip()
+        if _URL_RE.search(raw) or "[cq:json" in raw.lower():
+            self._diag(origin, "命中词：带链接/卡片，跳过")
+            return None
+        if is_legacy_command(raw):
+            self._diag(origin, "命中词：指令消息，跳过")
+            return None
+        msg = strip_links(raw)
+        if not msg:
+            return None
+        if self._is_muted(origin):
+            self._diag(origin, "命中词：静默中，跳过")
+            return None
+        return msg
+
     def _passive_filter(self, event: AstrMessageEvent, origin: str) -> str | None:
         """被动接話的前置過濾；通過則回傳清洗後的訊息，否則 None。"""
         if getattr(event, "is_at_or_wake_command", False):
@@ -817,6 +834,65 @@ class GroupProactiveHandler(HandlerContextMixin):
             self._diag(origin, f"静默中 剩{max(left, 0)}s")
             return None
         return msg_str
+
+    # ------------------------------------------------------------ 命中词唤醒
+    def _hit_keywords(self, msg_str: str) -> list[str]:
+        """返回消息里命中的关键词列表（已按配置去空白、去空项）。"""
+        try:
+            raw = self.cfg.get("群聊命中词_关键词") or []
+        except Exception:
+            return []
+        if isinstance(raw, str):
+            raw = raw.replace("，", ",").split(",")
+        words = [str(w).strip() for w in raw if str(w).strip()] if isinstance(raw, list) else []
+        if not words:
+            return []
+        text = (msg_str or "").lower()
+        return [w for w in words if w.lower() in text]
+
+    def _keyword_wakeup(self, origin: str, msg_str: str, now: float) -> bool:
+        """命中词高概率唤醒：命中就跳过冷却与掷骰窗口，直接按高概率接话。
+
+        返回 True 表示已判定要接话。
+        """
+        if not bool(self.cfg.get("群聊命中词_启用", True)):
+            return False
+        hits = self._hit_keywords(msg_str)
+        if not hits:
+            return False
+
+        # 可选：要求同时带上对 Bot 的称呼，避免误触发
+        if bool(self.cfg.get("群聊命中词_需包含称呼", False)):
+            names = self._id().all_names
+            low = (msg_str or "").lower()
+            if not any(str(n).lower() in low for n in names if str(n).strip()):
+                self._diag(origin, f"命中词 {hits[0]!r} 但未带称呼，不唤醒")
+                return False
+
+        # 连发保护：两次命中词接话之间留一个最小间隔
+        try:
+            min_gap = float(self.cfg.get("群聊命中词_最短间隔秒", 20) or 0)
+        except (TypeError, ValueError):
+            min_gap = 20.0
+        last = self._keyword_last_spoke.get(origin, 0.0)
+        if min_gap > 0 and now - last < min_gap:
+            self._diag(origin, f"命中词 {hits[0]!r} 但间隔未到，剩{int(min_gap - (now - last))}s")
+            return False
+
+        try:
+            chance = float(self.cfg.get("群聊命中词_接话概率", 0.9))
+        except (TypeError, ValueError):
+            chance = 0.9
+        chance = max(0.0, min(1.0, chance))
+        if random.random() >= chance:
+            self._diag(origin, f"命中词 {hits[0]!r} 但概率未中 p={chance:.2f}")
+            return False
+
+        self._keyword_last_spoke[origin] = now
+        self._miss_streak[origin] = 0
+        self._diag(origin, f"命中词 {hits[0]!r} 唤醒")
+        logger.info("proactive_life | 群命中词唤醒 [%s] %s", origin, hits[0])
+        return True
 
     async def _passive_decide(
         self, event: AstrMessageEvent, origin: str, msg_str: str, now: float
@@ -1068,23 +1144,35 @@ class GroupProactiveHandler(HandlerContextMixin):
 
     async def handle_group_message_passive(self, event: AstrMessageEvent):
         """
-        升级版群聊被动感知与接话系统：
+        群聊被动接话：
+        0. 命中词唤醒（独立于插话开关，@Bot 也照样生效）；
         1. 被回应优先接话（引用回复 / 90秒内顺话头接话）；
         2. 兴趣加权被动插话（含饥饿补偿与硬保底）；
         3. 严格的防胡说八道 & 人设护栏 Prompt。
         """
-        if not bool(self.cfg.get("群聊插话_启用", False)):
+        origin = event.unified_msg_origin
+        raw_msg = (event.message_str or "").strip()
+        now = time.time()
+
+        # 0. 命中词唤醒：这是「被点名」，不该被插话开关或 @ 过滤挡掉
+        kw_hit = self._keyword_wakeup(origin, raw_msg, now)
+        if not kw_hit and not bool(self.cfg.get("群聊插话_启用", False)):
             return
 
-        origin = event.unified_msg_origin
-        msg_str = self._passive_filter(event, origin)
+        # 命中词唤醒时放宽前置过滤：允许 @Bot/唤醒词消息，但仍挡链接与静默
+        msg_str = (
+            self._keyword_filter(event, origin) if kw_hit
+            else self._passive_filter(event, origin)
+        )
         if msg_str is None:
             return
 
-        now = time.time()
-        should_reply, reply_reason, is_responding_to_bot = await self._passive_decide(
-            event, origin, msg_str, now
-        )
+        if kw_hit:
+            should_reply, reply_reason, is_responding_to_bot = True, "keyword_hit", False
+        else:
+            should_reply, reply_reason, is_responding_to_bot = await self._passive_decide(
+                event, origin, msg_str, now
+            )
         if not should_reply:
             return
 
@@ -1140,7 +1228,7 @@ class GroupProactiveHandler(HandlerContextMixin):
 
             prompt = (
                 f"当前群消息：「{event.message_str}」。\n"
-                f"作为真实群友唯笑，你现在想不想在群里顺口搭一句话？"
+                f"作为真实群友{self._bot_name()}，你现在想不想在群里顺口搭一句话？"
                 f"输出 YES 或 NO。"
             )
             resp = await prov.text_chat(prompt=prompt, system_prompt="你是判定器，只输出 YES 或 NO")
@@ -1248,7 +1336,7 @@ class GroupProactiveHandler(HandlerContextMixin):
                 session=session,
                 message=prompt,
                 sender_id="system",
-                sender_name="唯笑",
+                sender_name=self._bot_name(),
                 message_type=MessageType.GROUP_MESSAGE,
             )
 

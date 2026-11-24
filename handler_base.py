@@ -24,6 +24,39 @@ class HandlerContextMixin:
     # 由插件主类注入，默认 None
     activity_logger = None
     mood_store = None
+    identity = None
+
+    # ---------------------------------------------------------------- 角色身分
+    def _id(self):
+        """取角色身分；未注入时回落到空身份（不含任何人的角色特征）。"""
+        from .identity import Identity, from_config
+
+        obj = getattr(self, "identity", None)
+        if obj is not None:
+            return obj
+        try:
+            return from_config(self.cfg)
+        except Exception:
+            return Identity()
+
+    def _bot_name(self) -> str:
+        """Bot 自称；留空时从 AstrBot 人设推断一个中性称呼。"""
+        return self._id().bot_name or "我"
+
+    def _user_name(self) -> str:
+        """私聊对象称呼；留空则用中性词。"""
+        return self._id().user_name or "对方"
+
+    def _persona_block(self) -> str:
+        """AstrBot 人设 + 手动补充 + 生活背景。"""
+        return self._id().persona_block()
+
+    def _persona_field(self) -> str:
+        """给 prompt 用的整段人设文字（带小节标题）；没有人设则返回空串。"""
+        text = self._persona_block()
+        if not text.strip():
+            return ""
+        return f"【你的人设与生活方式】\n{text.strip()}\n\n"
 
     # ---------------------------------------------------------------- 模块总开关
     def _module_on(self, name: str) -> bool:

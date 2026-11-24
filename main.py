@@ -12,6 +12,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 from .common import DEFAULT_TARGET_UID
+from .identity import Identity, from_config as identity_from_config, read_astrbot_persona
 from .debounce import DebounceManager, MessageExtractor, attach_finalizer
 from .mood import MoodStore
 from .schedule_gen import ScheduleGenerator, ScheduleStore
@@ -33,6 +34,18 @@ USER_AGENT = (
 )
 
 DEFAULT_CONFIG = {
+    # 角色身分（不写死任何人的设定；人设自动读 AstrBot 自身配置）
+    "角色_AstrBot人设": "",
+    "角色_插件提示词模型": "",
+    "角色_插件专用提示词": "",
+    "角色_自动读取AstrBot人设": True,
+    "角色_Bot自称": "",
+    "角色_对方称呼": "",
+    "角色_备用称呼": [],
+    "角色_生活背景": "",
+    "角色_兴趣关键词": [],
+    "角色_额外人设": "",
+
     # 模块级总开关：关掉后该模块完全不介入，便于和别的插件共存
     "模块_私聊": True,
     "模块_群聊": True,
@@ -107,6 +120,11 @@ DEFAULT_CONFIG = {
     "群聊白名单_概率倍数": 2.5,
     "群聊独立分区配置": [],
     "群聊判定模型": "",
+    "群聊命中词_启用": True,
+    "群聊命中词_关键词": [],
+    "群聊命中词_接话概率": 0.9,
+    "群聊命中词_最短间隔秒": 20,
+    "群聊命中词_需包含称呼": False,
     "场景感知_启用": True,
     "场景感知_让位contextaware": True,  # 原 context_aware 启用时不重复注入 conversation_scene
     "场景感知_对话窗口": 8,        # 注入 LLM 的最近对话流条数
@@ -249,6 +267,13 @@ class ProactiveLifePlugin(Star):
         self._last_schedule_day: str = ""
         # 消息防抖：多条消息合并成一批再交给模型
         self.debounce = DebounceManager(self.cfg)
+        # 角色身分：先按配置建好，persona 文本在 initialize() 异步补齐
+        self.identity = identity_from_config(self.cfg)
+        for _h in (self.private_h, self.group_h, self.worker_h, self.schedule_gen):
+            try:
+                _h.identity = self.identity
+            except Exception:
+                pass
         # 跨轮情绪：让开口有连续性（衰减时长取自配置，改配置后重载生效）
         try:
             _decay = float(self.cfg.get("拟人_情绪衰减小时", 3.0) or 3.0)
@@ -325,6 +350,8 @@ class ProactiveLifePlugin(Star):
     async def initialize(self):
         self._stop_event.clear()
         self._last_macro_tick = time.time()
+        # 角色身分：按所选 AstrBot 人设读取，并加载插件专用提示词
+        await self._load_persona()
         self._main_loop_task = asyncio.create_task(self._coordinator_loop())
         try:
             web_api.register(self)
@@ -477,7 +504,7 @@ class ProactiveLifePlugin(Star):
 
     @filter.after_message_sent()
     async def on_after_message_sent(self, event: AstrMessageEvent):
-        """发送消息后：释放防抖租约、记录唯笑的发言，开启私聊智能追问与群聊接话窗口。"""
+        """发送消息后：释放防抖租约、记录 Bot 的发言，开启私聊智能追问与群聊接话窗口。"""
         if self._stop_event.is_set():  # 重载残留的旧实例 handler，直接空转
             return
         # 防抖租约释放：无论成功失败都要放，否则会话会卡住
@@ -536,7 +563,7 @@ class ProactiveLifePlugin(Star):
 
     @filter.llm_tool(name="pl_bilibili_hot")
     async def browse_bilibili_hot(self, event: AstrMessageEvent, count: int = 5) -> str:
-        """刷B站热门视频榜单。当你手头闲着、想看看B站大家在看什么、或者想找点好玩的话题跟优可吐槽时调用。
+        """刷B站热门视频榜单。手头闲着、想看看大家在看什么、或者想找点好玩的话题时调用。
 
         Args:
             count(number): 获取几条热门视频，默认5条，范围1到10。
@@ -612,6 +639,9 @@ class ProactiveLifePlugin(Star):
         while not self._stop_event.is_set():
             now = datetime.datetime.now()
 
+            # 0. 配置可能在面板被改，同步角色身分（纯内存，开销可忽略）
+            await self._refresh_identity()
+
             # 1. 优先执行私聊追问检查（超低开销，秒级响应未回答提问）
             try:
                 if self._module_on("私聊"):
@@ -641,6 +671,54 @@ class ProactiveLifePlugin(Star):
                 await asyncio.wait_for(self._stop_event.wait(), timeout=30)
             except asyncio.TimeoutError:
                 pass
+
+    def _sync_identity(self, persona_text: str | None = None) -> None:
+        """用当前配置重建 Identity，并注入所有 handler。
+
+        persona_text 为 None 时保留上一次读到的文本（面板改配置后不必重读）。
+        """
+        try:
+            fresh = identity_from_config(self.cfg)
+            fresh.persona_text = (
+                self.identity.persona_text if persona_text is None else persona_text
+            )
+            if persona_text is None:
+                fresh.plugin_prompt = str(
+                    self.cfg.get("角色_插件专用提示词", "") or ""
+                ).strip()
+            self.identity = fresh
+            for _h in (self.private_h, self.group_h, self.worker_h, self.schedule_gen):
+                try:
+                    _h.identity = fresh
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    async def _load_persona(self) -> None:
+        """按配置所选的人设读取 prompt（切换人设/重载时调用）。"""
+        try:
+            from .identity import read_persona_by_id
+
+            if bool(self.cfg.get("角色_自动读取AstrBot人设", True)):
+                pid = str(self.cfg.get("角色_AstrBot人设", "") or "")
+                text = await read_persona_by_id(self.context, pid)
+                logger.info(
+                    "proactive_life | 人设读取：选择=%r，读到 %d 字%s",
+                    pid, len(text), "（所选人设为空，已回退默认）" if pid and text else "",
+                )
+            else:
+                text = ""
+                logger.info("proactive_life | 自动读取人设已关闭")
+            self._sync_identity(persona_text=text)
+            if text:
+                logger.info("proactive_life | 已读取人设（%d 字）", len(text))
+        except Exception as e:
+            logger.debug("proactive_life | 读取 AstrBot 人设失败，改用手动配置: %s", e)
+
+    async def _refresh_identity(self) -> None:
+        """配置可能在面板被改，每轮把身份字段同步一次（人设文本保留）。"""
+        self._sync_identity()
 
     async def _maybe_generate_schedule(self, now: datetime.datetime) -> None:
         """到设定的生成时间后，为当天生成一次日程。

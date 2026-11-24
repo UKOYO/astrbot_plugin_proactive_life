@@ -270,6 +270,10 @@ class ScheduleGenerator:
             return ""
 
     async def _persona(self) -> str:
+        """人设来自 AstrBot 自身配置（由主类统一解析并注入 identity）。"""
+        obj = getattr(self, "identity", None)
+        if obj is not None:
+            return obj.persona_block()
         try:
             p = await self.context.persona_manager.get_default_persona_v3()
             return (p.get("prompt") if isinstance(p, dict) else getattr(p, "prompt", "")) or ""

@@ -11,6 +11,16 @@
   const SCOPE_NAMES = { public: "公开", private: "私密" };
 
   const LABELS = {
+    "角色_AstrBot人设": "选用人设",
+    "角色_插件提示词模型": "提示词生成模型",
+    "角色_插件专用提示词": "插件专用提示词",
+    "角色_自动读取AstrBot人设": "自动读取 AstrBot 人设",
+    "角色_Bot自称": "Bot 自称",
+    "角色_对方称呼": "对方称呼",
+    "角色_备用称呼": "备用称呼",
+    "角色_生活背景": "生活背景",
+    "角色_兴趣关键词": "兴趣关键词",
+    "角色_额外人设": "额外人设",
     "模块_私聊": "私聊模块总开关",
     "模块_群聊": "群聊模块总开关",
     "模块_摸鱼": "摸鱼模块总开关",
@@ -67,6 +77,11 @@
     "群聊白名单": "群聊白名单",
     "群聊白名单_概率倍数": "白名单概率倍数",
     "群聊判定模型": "群聊判定模型",
+    "群聊命中词_启用": "命中词唤醒",
+    "群聊命中词_关键词": "命中词",
+    "群聊命中词_接话概率": "命中后接话概率",
+    "群聊命中词_最短间隔秒": "命中最短间隔 · 秒",
+    "群聊命中词_需包含称呼": "命中需带称呼",
     "群聊独立分区配置": "群专属分区",
     "场景感知_启用": "场景感知 · 防抢答",
     "场景感知_让位contextaware": "让位原 context_aware",
@@ -115,14 +130,15 @@
   const WORKER_KEYS = ["后台摸鱼_启用", "摸鱼干活最短间隔", "摸鱼干活概率", "优先消费心事动机"];
   const VOICE_KEYS = ["模拟分段打字", "分段发送延迟"];
   // 这些键用多行文本框编辑
-  const TEXTAREA_KEYS = ["日程_提示词模板"];
+  const TEXTAREA_KEYS = ["日程_提示词模板", "角色_生活背景", "角色_额外人设", "角色_插件专用提示词"];
   const MODULE_GROUP = {
     "模块_私聊": "private", "模块_群聊": "group", "模块_摸鱼": "worker",
     "模块_节奏": "rhythm", "模块_日程": "schedule", "模块_上下文": "context",
-    "模块_防抖": "debounce",
+    "模块_防抖": "debounce", "模块_身份": "identity",
   };
   const GROUP_OF = (key) => {
     if (MODULE_GROUP[key]) return MODULE_GROUP[key];
+    if (key.startsWith("角色_")) return "identity";
     if (key === "日程生成时间" || key.startsWith("日程_")) return "schedule";
     if (key.startsWith("防抖_")) return "debounce";
     if (key.startsWith("场景感知_") || key.startsWith("拟人_")) return "context";
@@ -156,6 +172,8 @@
     activityList: document.getElementById("activityList"),
     conflictBox: document.getElementById("conflictBox"),
     debounceStats: document.getElementById("debounceStats"),
+    identityView: document.getElementById("identityView"),
+    personaExtra: document.getElementById("personaExtra"),
     scheduleView: document.getElementById("scheduleView"),
     scheduleHint: document.getElementById("scheduleHint"),
     scheduleExtra: document.getElementById("scheduleExtra"),
@@ -443,6 +461,7 @@
     renderRhythm(s.rhythm || {});
     renderWorker(s.worker || {}, s.motive || {});
     renderContext(s.context || {});
+    renderIdentity(s.identity || {});
     renderDebounce(s.debounce || {});
     renderConflicts(s.conflicts || []);
     renderActivity(s.activity || []);
@@ -662,6 +681,34 @@
     if (!node) return;
     node.style.height = "auto";
     node.style.height = node.scrollHeight + "px";
+  }
+
+  // 角色身分：确认人设是否真的从 AstrBot 读到了
+  function renderIdentity(d) {
+    const box = el.identityView;
+    if (!box) return;
+    if (!d || !d.available) {
+      box.innerHTML = '<div class="ident__empty">身分未初始化</div>';
+      return;
+    }
+    const rows = [
+      ["Bot 自称", d.bot_name || "（留空，跟随人设）"],
+      ["对方称呼", d.user_name || "（留空，用「对方」）"],
+      ["备用称呼", (d.aliases || []).join("、") || "—"],
+      ["兴趣词", (d.interests || []).join("、") || "—"],
+    ];
+    rows.push(["选用人设", d.persona_id || "AstrBot 默认"]);
+    rows.push(["专用提示词", d.using_synth ? `已生成 ${d.plugin_prompt_len} 字` : "尚未生成"]);
+    const persona = d.using_synth
+      ? `插件专用提示词（${d.plugin_prompt_len} 字）正在生效：「${(d.plugin_prompt_preview || "").replace(/\s+/g, " ").slice(0, 60)}…」`
+      : d.auto
+        ? (d.persona_len
+            ? `已读取 ${d.persona_len} 字人设：「${(d.persona_preview || "").replace(/\s+/g, " ").slice(0, 60)}…」`
+            : "已开启自动读取，但当前未取到 AstrBot 人设")
+        : "自动读取已关闭，只用手动填写的内容";
+    box.innerHTML =
+      rows.map(([k, v]) => `<div class="ident__row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("") +
+      `<div class="ident__persona">${esc(persona)}</div>`;
   }
 
   // 防抖实时状态
@@ -938,7 +985,7 @@
     if (confBuilt) return;
     options = options || {};
     // 每个分頁各自一个 form，不共享滚动；先收集再分配
-    const buckets = { core: [], private: [], group: [], worker: [], rhythm: [], schedule: [], context: [], debounce: [] };
+    const buckets = { core: [], private: [], group: [], worker: [], rhythm: [], schedule: [], context: [], debounce: [], identity: [] };
     schema.forEach(({ key, type }) => {
         const group = GROUP_OF(key);
         const label = LABELS[key] || key;
@@ -1053,6 +1100,53 @@
     bindCombos();
   }
 
+  // 从后端重新拉配置并回填表单（不动用户当前正在编辑的输入框）
+  async function syncConfigFields() {
+    if (!bridge) return;
+    try {
+      const c = await bridge.apiGet(`${API}/config`);
+      const values = c.values || {};
+      document.querySelectorAll("[data-key]").forEach((node) => {
+        const key = node.dataset.key;
+        if (!Object.prototype.hasOwnProperty.call(values, key)) return;
+        // 正在聚焦的输入框不覆盖，避免打断用户输入
+        if (document.activeElement === node) return;
+        const actual = values[key];
+        if (node.dataset.type === "bool") node.checked = Boolean(actual);
+        else if (node.dataset.type === "list") {
+          if (node.hasAttribute("data-list-root")) {
+            renderChips(node, Array.isArray(actual) ? actual : []);
+          } else {
+            node.value = Array.isArray(actual)
+              ? actual.join(node.value.includes("\n") ? "\n" : ", ")
+              : String(actual ?? "");
+          }
+        } else {
+          node.value = String(actual ?? "");
+          if (node.tagName === "TEXTAREA" && typeof autoGrow === "function") autoGrow(node);
+        }
+      });
+      // 下拉选项也刷新（人设列表/模型列表可能变化）
+      if (c.options) {
+        document.querySelectorAll(".combo[data-key]").forEach((combo) => {
+          const opts = c.options[combo.dataset.key];
+          if (!Array.isArray(opts)) return;
+          const current = combo.querySelector("input[type=hidden]")?.value ?? "";
+          const menu = combo.querySelector(".combo__menu");
+          if (!menu) return;
+          menu.innerHTML = opts
+            .map((o) =>
+              `<div class="combo__item${String(o.value) === String(current) ? " is-active" : ""}" data-value="${esc(String(o.value))}">${esc(o.label || "")}</div>`
+            )
+            .join("");
+          if (typeof bindCombos === "function") bindCombos();
+        });
+      }
+    } catch (err) {
+      toastThrottled(`同步配置失败：${err.message || err}`);
+    }
+  }
+
   function readField(node) {
     const type = node.dataset.type;
     if (type === "bool") return node.checked;
@@ -1154,9 +1248,14 @@
       if (action === "schedule_generate" && el.scheduleExtra && el.scheduleExtra.value.trim()) {
         body.extra = el.scheduleExtra.value.trim();
       }
+      if (action === "persona_synthesize" && el.personaExtra && el.personaExtra.value.trim()) {
+        body.extra = el.personaExtra.value.trim();
+      }
+      if (action.startsWith("persona_") && target) target.textContent = "处理中…";
       const resp = await bridge.apiPost(`${API}/action`, body);
       toast((resp && resp.message) || (resp && resp.ok ? "已完成" : "失败"), !resp || !resp.ok);
       await refresh();
+      await syncConfigFields();
     } catch (err) {
       toast(err.message || String(err), true);
     } finally {
@@ -1214,7 +1313,7 @@
 
   // 分区 tab：每个分组是独立分頁，互不共享滚动
   const TAB_KEY = "pl_panel_tab";
-  const TABS = ["overview", "private", "group", "worker", "rhythm", "schedule", "debounce", "context"];
+  const TABS = ["overview", "private", "group", "worker", "rhythm", "schedule", "debounce", "identity", "context"];
 
   function setTab(name) {
     const tab = TABS.includes(name) ? name : "overview";

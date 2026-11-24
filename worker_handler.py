@@ -14,15 +14,16 @@ from .agent_runner import (
     build_agent_config, make_request, run_agent,
 )
 
-# 默认探索方向（用户没自定义时使用）
-_DEFAULT_EXPLORE_INTENT = """1. **AI 圈前沿新闻与开源模型（高频优先）**：用 web_search_anysearch 搜搜今天/本周最新的 AI 大模型发布、开源权重与小模型动态、生图/视频多模态新工具、AI Agent 进展、厂商争锋与行业大瓜；
-2. **全网搜热点/游戏与技术情报**：用 web_search_anysearch 搜搜今天二次元资讯、Steam/主机新游热点、独立游戏制作、业界趣闻；
-3. **二次元新番/考据/评分**：查新番放送与进度（get_anime_list）、查 Bangumi 评分口碑（search_bangumi_subject）、翻萌娘百科设定与冷知识（search_moegirl）；
-4. **社媒动态与吃瓜**：刷刷好友空间说说（llm_view_friend_feeds）、逛逛贴吧热议话题（pl_tieba_hot）、看看B站热门榜单（pl_bilibili_hot）。"""
+# 默认探索方向（用户没自定义时使用）；中性通用，不绑定任何人的兴趣或特定工具
+_DEFAULT_EXPLORE_INTENT = """1. **近期热点与新闻**：用可用的联网搜索查查今天/本周的新鲜事、行业动态或大家正在讨论的话题；
+2. **实用资讯**：查查天气、节日、生活小知识或值得留意的信息；
+3. **轻松话题**：看看热门榜单、有趣内容或值得分享的见闻；
+4. **随手翻翻**：用已装配的搜索/MCP/榜单工具挑一个方向实际查证，别只凭记忆编。"""
 
 _WORKER_PROMPT = """【时间与情境】
 - 当前时间：{now_str}
-- 你手头正好闲下来，像真实死宅、同人作者兼网民一样在电脑前摸鱼，想去网上冲浪、探索、吃瓜或者收集灵感。
+- 你手头正好闲下来，想上网冲浪、探索、吃瓜或者收集点灵感。
+{persona_block}
 
 【最近已有过的心事/探索记录（严禁重复或同质化选题）】
 {recent_topics}
@@ -33,7 +34,7 @@ _WORKER_PROMPT = """【时间与情境】
 {explore_intent}
 
 【绝对禁忌与输出要求】
-- 严禁死板重复上面【最近已有过的心事】里的任何话题，也不要老盯着洛奇、久留美或固定陈年旧梗；
+- 严禁死板重复上面【最近已有过的心事】里的任何话题，也不要反复盯着同一个陈旧选题；
 - 必须根据你探索到的真实结果，以第一人称随口写一句你最直观的吐槽、发现或感想（1~2句话，短碎口语，拒绝新闻通稿/客服总结腔）；
 - 写完后这句心声会自动沉淀进你的心事话题池，作为后续开口的灵感原料。"""
 
@@ -175,6 +176,7 @@ class AutonomousWorkerHandler(HandlerContextMixin):
                 now_str=now_str,
                 recent_topics=recent_topics,
                 explore_intent=self._explore_intent(),
+                persona_block=self._persona_field(),
             )
 
             ev = CronMessageEvent(
@@ -182,7 +184,7 @@ class AutonomousWorkerHandler(HandlerContextMixin):
                 session=session,
                 message=prompt,
                 sender_id=DEFAULT_TARGET_UID,
-                sender_name="唯笑",
+                sender_name=self._bot_name(),
             )
 
             # 放开工具步数与超时，允许自主链式调用

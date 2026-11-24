@@ -41,7 +41,7 @@ def _db_path() -> str:
 
 
 def _key(umo: str) -> str:
-    """平台前缀会变（ncd-app_xxx / 大魔王），只认最后两段：类型:ID。"""
+    """平台前缀会变，只认最后两段：类型:ID。"""
     parts = str(umo).split(":")
     return ":".join(parts[-2:]) if len(parts) >= 3 else str(umo)
 

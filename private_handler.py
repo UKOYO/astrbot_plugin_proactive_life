@@ -21,26 +21,26 @@ from .agent_runner import (
 
 _WAKE_PROMPT = """【时间与情境】
 - 当前时间：{now_str}（{period_desc}）
-- 优可约 {silent_min} 分钟没说话了，你手头正好有点空。
-{mood_hint}
+- {user_name}约 {silent_min} 分钟没说话了，你手头正好有点空。
+{persona_block}{mood_hint}
 【核心开口动机与背景（关键引导）】
 {motive_instruction}
 
-【开口规范（彻底杜绝二次元早报与汇报腔）】
-1. 像真人单手在手机九宫格摸鱼打字：
-   - 随性、口语、短碎，说完就停。严禁输出「我在哪+在做什么+给Last Eden攒素材+问对方在干嘛」这种三段式近况汇报！
-   - 严禁把私聊当成新闻早报！绝对禁止机械套用「说起来 刚才搜了/刷到了...」「草 才发现...」这种格式搬运资讯；
-   - 日常就是个窝在电竞椅里的随性死宅兼恋人，生活碎念远比搬运二手新闻更自然。
+【开口规范（杜绝汇报腔与新闻早报）】
+1. 像真人随手在手机上打字：
+   - 随性、口语、短碎，说完就停。严禁输出「我在哪+在做什么+在忙什么+问对方在干嘛」这种三段式近况汇报！
+   - 严禁把私聊当成新闻早报！绝对禁止机械套用「说起来 刚才搜了/刷到了...」这种格式搬运资讯；
+   - 生活碎念远比搬运二手新闻更自然。
 2. 聊具体的事，有明确目的感与真实体感：
    - 如果有【心事/话题】，必须像真人随口聊天一样自然提及，严禁背新闻稿，若觉得太生硬可直接放弃改聊日常；
-   - 优先聊当下真实的生理与生活体感（刚醒开机困难、纠结午饭点什么、外卖慢了、房间有点冷、画图眼睛酸、游戏卡关破防）；
-   - 也可以像情侣日常一样单纯随手戳他一下、甩个吐槽或小牢骚。
+   - 优先聊当下真实的生理与生活体感（刚醒开机困难、纠结吃什么、外卖慢了、房间有点冷、工作或游戏卡住）；
+   - 也可以单纯随手戳他一下、甩个吐槽或小牢骚。
 3. 纯第一人称台词，严禁动作括号内心戏，绝不解释为什么发消息。"""
 
 _NUDGE_PROMPT = """【时间与情境】
 - 当前时间：{now_str}（{period_desc}）
-- 刚才你在私聊里对优可说了/抛出了下面的话题或提问，但他已经约 {elapsed_min} 分钟没有回复了，对话卡在这儿。
-{mood_hint}
+- 刚才你在私聊里对{user_name}说了/抛出了下面的话题或提问，但已经约 {elapsed_min} 分钟没有回复了，对话卡在这儿。
+{persona_block}{mood_hint}
 【刚才你的发言/抛出的问题】
 「{question}」
 
@@ -150,7 +150,7 @@ def _clean_spoken_text(text: str) -> str:
 
 
 def _is_inquiry(text: str) -> bool:
-    """启发式检测唯笑发言是否属于提问、促使对方表态或挂念的话题（升级版，兼容无标点短句口白）。"""
+    """启发式检测 Bot 发言是否属于提问、促使对方表态或挂念的话题（升级版，兼容无标点短句口白）。"""
     t = text.strip()
     if not t:
         return False
@@ -270,16 +270,16 @@ class PrivateProactiveHandler(HandlerContextMixin):
     def record_user_message(self, uid: str):
         uid_str = str(uid)
         self.state["last_user_msg"][uid_str] = time.time()
-        # 优可回消息了，自动清除该用户的待追问挂念
+        # 对方回消息了，自动清除该用户的待追问挂念
         if "pending_inquiries" in self.state and uid_str in self.state["pending_inquiries"]:
             self.state["pending_inquiries"].pop(uid_str, None)
-            logger.info("proactive_life | 优可已回复消息，解除待追问挂念 -> %s", uid_str)
+            logger.info("proactive_life | 对方已回复消息，解除待追问挂念 -> %s", uid_str)
         self._save_state()
         # 被回应了，情绪转好
         self._mood_apply(uid_str, "replied", "对方回消息")
 
     def record_bot_message(self, uid: str, text: str):
-        """记录唯笑发送给用户的私聊消息，若有疑问或挂念则注册待追问任务"""
+        """记录 Bot 发送给用户的私聊消息，若有疑问或挂念则注册待追问任务"""
         uid_str = str(uid)
         targets = [str(x) for x in (self.cfg.get("对谁主动") or [DEFAULT_TARGET_UID])]
         if uid_str not in targets:
@@ -348,7 +348,7 @@ class PrivateProactiveHandler(HandlerContextMixin):
                     content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
                 if not content:
                     continue
-                who = "优可" if role == "user" else "唯笑"
+                who = self._user_name() if role == "user" else self._bot_name()
                 out.append(f"{who}: {str(content)[:160]}")
             return "\n".join(out)
         except (OSError, ValueError, TypeError, AttributeError) as e:
@@ -370,7 +370,7 @@ class PrivateProactiveHandler(HandlerContextMixin):
                 session=session,
                 message=prompt_text,
                 sender_id=uid,
-                sender_name="唯笑",
+                sender_name=self._bot_name(),
             )
 
             build_cfg = build_agent_config(self.context, umo, tool_call_timeout=120)
@@ -486,6 +486,8 @@ class PrivateProactiveHandler(HandlerContextMixin):
             elapsed_min=elapsed_min,
             question=question,
             mood_hint=self._mood_hint(uid),
+            user_name=self._user_name(),
+            persona_block=self._persona_field(),
         )
 
         ok = await self._execute_proactive_agent(uid, prompt_text, source="proactive_nudge")
@@ -566,7 +568,7 @@ class PrivateProactiveHandler(HandlerContextMixin):
                 reason.append(f"【你的日程与作息状态】\n{schedule[:400]}")
             if recent:
                 reason.append(f"【最近你们聊过的话题与残留语境】\n{recent[-500:]}")
-            reason_hint = "\n\n".join(reason) if reason else "【生活状态】随性在椅子上摸鱼发呆，忽然想找优可说句话。"
+            reason_hint = "\n\n".join(reason) if reason else f"【生活状态】手头正好空下来，忽然想找{self._user_name()}说句话。"
             motive_instruction = f"【生活碎碎念参考】\n{reason_hint}"
             # 没有心事时，给一个内置的开口方向，别每次都同一句
             kind, text = self._builtin_motive()
@@ -587,6 +589,8 @@ class PrivateProactiveHandler(HandlerContextMixin):
             silent_min=int(silent_min),
             motive_instruction=motive_instruction,
             mood_hint=self._mood_hint(uid),
+            user_name=self._user_name(),
+            persona_block=self._persona_field(),
         )
 
         ok = await self._execute_proactive_agent(uid, prompt_text, source="proactive_life")

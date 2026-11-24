@@ -631,6 +631,22 @@ body.is-monospaced .sec__head span { font-family: var(--mono); }
 .member__row span { opacity: .7; font-family: var(--mono); }
 .member__row span:last-child { font-family: var(--font); }
 
+/* 身份页 */
+.identity__acts { justify-content: flex-start; }
+
+/* 角色身分 */
+.ident__row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 9px 0; border-bottom: 1px solid var(--c-line); font-size: 12px;
+}
+.ident__row span { opacity: .55; }
+.ident__row b { font-weight: 400; font-family: var(--mono); font-size: 12.5px; }
+.ident__persona {
+  margin-top: 12px; font-size: 11.5px; line-height: 1.7;
+  opacity: .6; white-space: pre-wrap;
+}
+.ident__empty { font-size: var(--t-label); opacity: .45; padding: 12px 0; }
+
 /* 防抖实时状态 */
 .dstats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 40px; }
 .dstats__row {

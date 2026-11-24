@@ -48,6 +48,7 @@
         <li data-tab="rhythm"><span class="_dot">●</span><span class="_text text-btn">节奏</span></li>
         <li data-tab="schedule"><span class="_dot">●</span><span class="_text text-btn">日程</span></li>
         <li data-tab="debounce"><span class="_dot">●</span><span class="_text text-btn">防抖</span></li>
+        <li data-tab="identity"><span class="_dot">●</span><span class="_text text-btn">身份</span></li>
         <li data-tab="context"><span class="_dot">●</span><span class="_text text-btn">上下文</span></li>
       </ol>
     </nav>
@@ -195,6 +196,27 @@
         <section class="sec">
           <h2 class="sec__head"><span>实时状态</span><em class="hint">当前合并中的会话</em></h2>
           <div id="debounceStats" class="dstats"></div>
+        </section>
+      </div>
+
+      <div class="panel-view" id="view-identity" data-view="identity">
+        <section class="sec">
+          <h2 class="sec__head"><span>当前生效</span><em class="hint">所选人设与专用提示词</em></h2>
+          <div id="identityView" class="ident"></div>
+        </section>
+
+        <section class="sec">
+          <h2 class="sec__head"><span>人设与生成</span><em class="hint">选择人设，再用模型生成专用提示词</em></h2>
+          <p class="lede">从 AstrBot 的人设里挑一份，指定模型把它改写成专供本插件使用的提示词。专用提示词会优先生效；也可以直接在下方手动编辑。</p>
+          <div class="acts identity__acts">
+            <button type="button" class="act text-btn" data-act="persona_reload">重新载入人设</button>
+            <button type="button" class="act text-btn" data-act="persona_synthesize">生成专用提示词</button>
+          </div>
+          <div class="schedule__edit">
+            <label class="schedule__label">生成补充要求（可选，如：语气再随意一点、少用书面语）</label>
+            <input id="personaExtra" type="text" placeholder="可留空" />
+          </div>
+          <form class="conf" data-conf="identity" autocomplete="off"></form>
         </section>
       </div>
 

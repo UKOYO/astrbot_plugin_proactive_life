@@ -22,6 +22,17 @@ API_PREFIX = f"/{PLUGIN_NAME}/panel"
 # 面板上允许修改的配置项 -> 期望类型。不在表里的配置项一律拒绝，
 # 避免前端手滑把整个配置结构写坏。
 EDITABLE: dict[str, type] = {
+    # 角色身分
+    "角色_AstrBot人设": str,
+    "角色_插件提示词模型": str,
+    "角色_插件专用提示词": str,
+    "角色_自动读取AstrBot人设": bool,
+    "角色_Bot自称": str,
+    "角色_对方称呼": str,
+    "角色_备用称呼": list,
+    "角色_生活背景": str,
+    "角色_兴趣关键词": list,
+    "角色_额外人设": str,
     # 模块级总开关（放在最前，保证每个分栏里它是第一项）
     "模块_私聊": bool,
     "模块_群聊": bool,
@@ -84,6 +95,11 @@ EDITABLE: dict[str, type] = {
     "群聊白名单_概率倍数": float,
     "群聊独立分区配置": list,
     "群聊判定模型": str,
+    "群聊命中词_启用": bool,
+    "群聊命中词_关键词": list,
+    "群聊命中词_接话概率": float,
+    "群聊命中词_最短间隔秒": int,
+    "群聊命中词_需包含称呼": bool,
     "场景感知_启用": bool,
     "场景感知_让位contextaware": bool,
     "场景感知_对话窗口": int,
@@ -375,7 +391,35 @@ def build_status(plugin) -> dict:
         "schedule": _schedule_block(cfg),
         "conflicts": _conflicts_block(plugin),
         "debounce": _debounce_block(plugin),
+        "identity": _identity_block(plugin),
     }
+
+
+def _identity_block(plugin) -> dict:
+    """角色身分当前生效值（含从 AstrBot 自动读取的人设预览）。"""
+    try:
+        obj = getattr(plugin, "identity", None)
+        if obj is None:
+            return {"available": False}
+        persona = str(obj.persona_text or "")
+        plugin_prompt = str(getattr(obj, "plugin_prompt", "") or "")
+        return {
+            "available": True,
+            "bot_name": obj.bot_name,
+            "user_name": obj.user_name,
+            "aliases": list(obj.aliases),
+            "life_bg": obj.life_bg,
+            "interests": list(obj.interests),
+            "persona_len": len(persona),
+            "persona_preview": persona[:160],
+            "persona_id": str(plugin.cfg.get("角色_AstrBot人设", "") or ""),
+            "plugin_prompt_len": len(plugin_prompt),
+            "plugin_prompt_preview": plugin_prompt[:160],
+            "using_synth": bool(plugin_prompt),
+            "auto": bool(plugin.cfg.get("角色_自动读取AstrBot人设", True)),
+        }
+    except Exception:
+        return {"available": False}
 
 
 def _debounce_block(plugin) -> dict:
@@ -635,6 +679,16 @@ def _motive_block(plugin) -> dict:
 # ---------------------------------------------------------------- config
 
 
+async def _persona_options(plugin) -> list[dict]:
+    """列出 AstrBot 的全部人设（供面板下拉）。"""
+    try:
+        from .identity import list_personas
+
+        return await list_personas(getattr(plugin, "context", None))
+    except Exception:
+        return [{"value": "", "label": "跟随 AstrBot 默认人设"}]
+
+
 def _model_options(plugin) -> list[dict]:
     """只列 LLM（聊天）模型，供判定模型下拉使用。
 
@@ -660,7 +714,7 @@ def _model_options(plugin) -> list[dict]:
     return out
 
 
-def build_config(plugin) -> dict:
+async def build_config(plugin) -> dict:
     cfg = plugin.cfg
     # 節奏項走 _rhythm_get，才能反映舊設定（無「節奏_」前綴）的有效值；
     # 其餘設定維持原本的活視圖讀取。
@@ -710,6 +764,8 @@ def build_config(plugin) -> dict:
         "场景感知_总结模型": models,
         "日程_生成模型": models,
         "摸鱼_搜索方向_模式": DIRECTION_MODE_OPTIONS,
+        "角色_AstrBot人设": await _persona_options(plugin),
+        "角色_插件提示词模型": models,
     }
     return {"status": "ok", "values": values, "schema": schema, "options": options}
 
@@ -827,6 +883,54 @@ async def do_action(plugin, payload: dict) -> dict:
         return {"ok": False, "message": "请求体不是 JSON 对象"}
     action = str(payload.get("action", "") or "").strip()
 
+    if action == "persona_reload":
+        await plugin._load_persona()
+        return {"ok": True, "message": "已重新载入所选人设", "identity": _identity_block(plugin)}
+
+    if action == "persona_synthesize":
+        extra = str(payload.get("extra", "") or "").strip()
+        ident = getattr(plugin, "identity", None)
+        source = (ident.persona_text if ident else "") or ""
+        if not source.strip():
+            # 快取为空时即时重读一次（用户可能刚在下拉里换了人设）
+            await plugin._load_persona()
+            ident = getattr(plugin, "identity", None)
+            source = (ident.persona_text if ident else "") or ""
+        if not source.strip():
+            return {"ok": False, "message": "没读到所选人设的内容。请确认：1)「自动读取 AstrBot 人设」已勾选；2) 下拉选的人设确实有提示词正文；3) 点一次「重新载入人设」后看日志里的「人设读取」字数"}
+        from .identity import synthesize_plugin_prompt
+
+        model_id = str(plugin.cfg.get("角色_插件提示词模型", "") or "")
+        result, err = await synthesize_plugin_prompt(
+            plugin.context, source, extra, model_id
+        )
+        if err or not result:
+            return {"ok": False, "message": f"生成失败：{err or '空结果'}"}
+        try:
+            patch = {
+                "角色_插件专用提示词": result.get("prompt", ""),
+                "角色_Bot自称": result.get("bot_name", ""),
+                "角色_对方称呼": result.get("user_name", ""),
+                "角色_备用称呼": result.get("aliases", []),
+                "角色_生活背景": result.get("life_bg", ""),
+                "角色_兴趣关键词": result.get("interests", []),
+                "角色_额外人设": result.get("extra_persona", ""),
+            }
+            ok = apply_config(plugin, patch)
+            if not ok.get("ok"):
+                return {"ok": False, "message": "生成成功但写入配置失败：" + str(ok.get("message", ""))}
+        except Exception as e:
+            return {"ok": False, "message": f"生成成功但写入失败：{e}"}
+        plugin._sync_identity()
+        n = len(result.get("prompt", ""))
+        return {
+            "ok": True,
+            "message": (
+                f"已生成并保存（提示词 {n} 字，另含自称/称呼/别名/背景/兴趣等字段）"
+            ),
+            "identity": _identity_block(plugin),
+        }
+
     if action == "schedule_generate":
         extra = str(payload.get("extra", "") or "").strip()
         try:
@@ -887,7 +991,7 @@ def make_handlers(plugin):
                 return error_response("请求体不是 JSON 对象", status_code=400)
             return json_response(apply_config(plugin, payload))
         try:
-            return json_response(build_config(plugin))
+            return json_response(await build_config(plugin))
         except Exception as exc:
             logger.warning(f"proactive_life | 面板配置读取失败: {exc}")
             return error_response("配置读取失败", status_code=500)
