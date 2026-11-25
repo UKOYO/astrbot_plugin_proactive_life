@@ -139,6 +139,9 @@
 
 ## 更新日志
 
+- **v1.3.5**
+  - **私聊分段与节奏对齐**：将 `private_handler._split_message` 统一委托至 `rhythm_trimmer.split_message`，修复超限时剩余文本全部堆到最后一段的问题；私聊分段改为读取面板「节奏_每段字数 / 节奏_最多几条」配置，消除写死默认值
+  - **稳定性与回归测试**：修复 `rhythm_mixin` 默认配置读取路径及 `re`、`group_prompt.time` 缺失导入，私聊日程读取改用 `read_schedule`；新增 `tests/test_segmentation.py` 分段回归测试
 - **v1.3.1**
   - **Bug 修复与公版脱敏**：修复 `_fetch_json` 协程误经 `asyncio.to_thread` 调用导致 B 站/贴吧热点工具报错的问题；清除配置与路径回退中的硬编码 UID 与本地绝对路径，改为跨平台目录兜底与 `system_worker` 虚拟标识
   - **架构拆分**：将 `web_api.py` 拆分为 `panel_common / panel_status / panel_config / panel_actions`，将 `group_handler.py` 拆出 `group_mute / group_prompt`，将 `main.py` 拆出 `rhythm_mixin`

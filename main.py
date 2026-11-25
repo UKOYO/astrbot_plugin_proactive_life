@@ -243,7 +243,7 @@ class _LiveConfig:
     "astrbot_plugin_proactive_life",
     "keyou",
     "自主生活与主动中枢",
-    "1.3.0",
+    "1.3.5",
     "融合私聊主动/追问、群聊破冰/插话、后台摸鱼、真人节奏、日程生成、消息防抖与上下文场景的一体化活人感中枢",
 )
 class ProactiveLifePlugin(Star, RhythmMixin):
