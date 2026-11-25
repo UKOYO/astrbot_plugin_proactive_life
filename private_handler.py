@@ -95,42 +95,15 @@ def _period_desc(now: datetime) -> str:
     return f"{w}深夜（夜猫子冲浪/熬夜修仙/该睡没睡）"
 
 
-def _split_message(text: str, target: int = 26, max_segments: int = 4) -> list[str]:
-    text = (text or "").strip()
-    if not text:
-        return []
-    sents = [s for s in re.split(r"(?<=[。！？!?…\n])", text) if s.strip()]
-    pieces = []
-    for s in sents:
-        s = s.strip()
-        if len(s) <= int(target * 1.5):
-            pieces.append(s)
-            continue
-        subs = [x for x in re.split(r"(?<=[，,；;、])", s) if x.strip()]
-        buf = ""
-        for sub in subs:
-            if len(buf) + len(sub) <= target:
-                buf += sub
-            else:
-                if buf:
-                    pieces.append(buf.strip())
-                buf = sub
-        if buf.strip():
-            pieces.append(buf.strip())
-    merged = []
-    for p in pieces:
-        if not p:
-            continue
-        if merged and len(merged[-1]) + len(p) <= target:
-            merged[-1] = merged[-1] + " " + p
-        else:
-            merged.append(p)
-    if len(merged) > max_segments:
-        head = merged[: max_segments - 1]
-        tail = "".join(merged[max_segments - 1:])
-        merged = head + [tail]
-    return [m.strip() for m in merged if m.strip()]
+def _split_message(text: str, target: int = 45, max_segments: int = 5) -> list[str]:
+    """兼容旧签名：委托给统一的 rhythm_trimmer.split_message。
 
+    以前这里有自己的一套拆句逻辑，且 max_segments 超限时会把剩余全部拼成
+    最后一条（"最后一段一堵墙"）。现在与群聊/回复前处理共用同一套实现。
+    """
+    from .rhythm_trimmer import split_message
+
+    return split_message(text, target=target, max_segments=max_segments)
 
 def _strip_trailing_punct(text: str) -> str:
     out = text.rstrip()
@@ -309,9 +282,9 @@ class PrivateProactiveHandler(HandlerContextMixin):
         if not self._module_on("日程"):
             return ""
         try:
-            from .common import ScheduleReader
+            from .common import read_schedule
             st = str(self.cfg.get("日程生成时间", "00:00") or "00:00")
-            info = ScheduleReader(schedule_data_path(), st).read()
+            info = read_schedule(st)
             if not info.get("schedule"):
                 return ""
             bits = []
@@ -384,7 +357,13 @@ class PrivateProactiveHandler(HandlerContextMixin):
             delay = float(self.cfg.get("分段发送延迟", 1.2))
 
             if simulate_typing:
-                segs = _split_message(text)
+                # 与面板「节奏」配置保持一致，不再用写死的 26/4
+                try:
+                    target = max(6, int(self.cfg.get("节奏_每段字数", 45) or 45))
+                    max_seg = max(1, int(self.cfg.get("节奏_最多几条", 5) or 5))
+                except (TypeError, ValueError):
+                    target, max_seg = 45, 5
+                segs = _split_message(text, target=target, max_segments=max_seg)
                 if not segs:
                     segs = [text]
                 for idx, seg in enumerate(segs):

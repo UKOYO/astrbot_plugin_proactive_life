@@ -6,6 +6,7 @@ self 上仍需有 _scene/_last_scene/_scene_analyzer/cfg 等状态。
 
 from __future__ import annotations
 
+import time
 
 from astrbot.api import logger
 

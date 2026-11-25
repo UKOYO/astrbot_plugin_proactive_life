@@ -7,6 +7,7 @@ self._rhythm_last / self.context.send_message 等，由宿主类提供。
 from __future__ import annotations
 
 import asyncio
+import re
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
@@ -40,25 +41,27 @@ class RhythmMixin:
         DEFAULT_CONFIG 里全是全名，短名分支永远走不到，等于死代码。
         """
         live = self.cfg._live
+        defaults = getattr(self.cfg, "_defaults", {})
         if key in live:
             return live[key]
         short = key.replace("节奏_", "")
         if short != key and short in live:
             return live[short]
-        if key in DEFAULT_CONFIG:
-            return DEFAULT_CONFIG[key]
-        if short in DEFAULT_CONFIG:
-            return DEFAULT_CONFIG[short]
+        if key in defaults:
+            return defaults[key]
+        if short in defaults:
+            return defaults[short]
         return default
 
     def _rhythm_on(self, key: str) -> bool:
         return bool(self._rhythm_get(key, False))
 
     def _rhythm_num(self, key: str) -> int:
+        defaults = getattr(self.cfg, "_defaults", {})
         try:
             return int(self._rhythm_get(key, 0) or 0)
         except (TypeError, ValueError):
-            return int(DEFAULT_CONFIG.get(key, 0))
+            return int(defaults.get(key, 0))
 
     def _rhythm_target(self) -> int:
         return max(6, self._rhythm_num("节奏_每段字数"))
