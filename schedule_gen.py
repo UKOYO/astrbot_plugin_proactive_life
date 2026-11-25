@@ -132,12 +132,13 @@ class ScheduleStore:
 
     def load(self) -> None:
         self._data = {}
-        try:
-            if not self.path.exists():
-                return
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning("proactive_life | 日程文件读取失败，按空处理: %s", e)
+        from .safe_io import sync_read_json
+
+        raw = sync_read_json(
+            self.path, None,
+            log_prefix="proactive_life | 日程文件读取失败，按空处理",
+        )
+        if not isinstance(raw, dict):
             return
         if not isinstance(raw, dict):
             return
@@ -156,14 +157,10 @@ class ScheduleStore:
         self._save()
 
     def _save(self) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            payload = {d: asdict(v) for d, v in self._data.items()}
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
-        except (OSError, TypeError, ValueError) as e:
-            logger.warning("proactive_life | 日程落盘失败: %s", e)
+        from .safe_io import sync_write_json
+
+        payload = {d: asdict(v) for d, v in self._data.items()}
+        sync_write_json(self.path, payload, log_prefix="proactive_life | 日程落盘失败")
 
     def history(self, before: datetime.date, days: int) -> list[ScheduleData]:
         out: list[ScheduleData] = []
@@ -283,11 +280,12 @@ class ScheduleGenerator:
     def _recent_explorations(self, limit: int = 5) -> str:
         try:
             from .common import hub_data_path
+            from .safe_io import sync_read_json
 
             f = hub_data_path() / "motive_pool.json"
-            if not f.exists():
+            raw = sync_read_json(f, {})
+            if not isinstance(raw, dict):
                 return "（无近期摸鱼记录）"
-            raw = json.loads(f.read_text(encoding="utf-8"))
             items = [
                 f"- {str(m.get('content') or '').strip()}"
                 for m in (raw.get("motives") or [])[-limit:]

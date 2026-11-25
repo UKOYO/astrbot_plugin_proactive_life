@@ -1,102 +1,25 @@
 import asyncio
 import json
-import os
 import random
 import time
 import traceback
-import re
 from typing import Any
 
 from astrbot.api import logger
 
 from .handler_base import HandlerContextMixin
+from .group_mute import (
+    GroupMuteMixin, is_annoyed_signal, is_mute_request, is_legacy_command, strip_links,
+    _URL_RE, _MUTE_WORDS, _ANNoyed_WORDS,  # 从此处统一导出，保持原模块可见
+)
+from .group_prompt import GroupPromptMixin
 from .agent_runner import (
     build_agent_config, make_request, attach_history, run_agent,
 )
 from .context_scene import (
     SceneAnalyzer, SceneGenerator, SceneTracker, SummaryStore,
-    note_from_data, SummaryNote, MemberStore,
+    note_from_data, SummaryNote, MemberStore, REPLY_STARTERS,
 )
-
-# 群里那些带链接的消息大半是别的 bot 发的卡片，插话链路一律不碰
-_URL_RE = re.compile(
-    r"https?://\S+|www\.\S+|\b[\w-]+\.(?:com|cn|net|org|top|xyz|me|io|cc|tv)(?:/\S*)?",
-    re.IGNORECASE,
-)
-# [图片] [表情] [CQ:json,...] 这类占位符
-_PLACEHOLDER_RE = re.compile(r"\[[^\]]*\]", re.IGNORECASE)
-
-
-# 让人闭嘴的说法，短句里命中任意一个就算
-_MUTE_WORDS = (
-    "闭嘴", "閉嘴", "别说话", "别讲了", "别吵", "安静点", "安静一下",
-    "消停", "别插话", "少说两句", "别bb", "shut up", "stfu", "别叫了",
-)
-
-# 「嫌烦」的软信号：没直接喊闭嘴，但明显表达不耐烦/不想她继续说。
-# 只在短句且指向她时生效，避免误伤群友之间吵架或转述。
-_ANNoyed_WORDS = (
-    "好烦", "好煩", "烦死", "煩死", "烦人", "煩人", "你好烦", "你好煩",
-    "别刷了", "別刷了", "别刷屏", "別刷屏", "刷屏了", "吵死了", "吵死",
-    "闭嘴吧", "閉嘴吧", "能不能安静", "能不安静", "无语", "無語",
-    "别闹了", "別鬧了", "少来", "少來", "够了", "夠了", "行了别", "行了別",
-)
-
-
-def is_annoyed_signal(text: str) -> bool:
-    """群友在表达嫌烦/不耐烦（比 is_mute_request 更软的信号）。
-
-    用于让 bot 学会「这时候别凑上来」，命中就进入一段短静默。
-    只在短句生效，且排除转述（让别人闭嘴、复述）的语气。
-    """
-    t = (text or "").strip().lower()
-    if not t or len(t) > 20:
-        return False
-    if not any(w in t for w in _ANNoyed_WORDS):
-        return False
-    # 转述别人的话不算（"他说你好烦" 之类）
-    if any(k in t for k in ("他说", "他說", "她说", "她說", "让我", "讓我", "帮我", "幫我")):
-        return False
-    # 在说自己的烦心事不算（"这游戏烦死了"、"我烦死了"），不是在嫌 bot
-    if any(k in t for k in ("我烦", "我煩", "烦死我了", "煩死我了", "这游戏", "這遊戲", "这关", "這關")):
-        return False
-    return True
-
-
-def is_mute_request(text: str, names: list[str] | None = None) -> bool:
-    """群友在让 Bot 闭嘴。
-
-    只认冲 Bot 来的话：短句直接算；稍微长一点的得带「你」或 Bot 的称呼
-    （称呼从角色配置来，不写死任何人的名字）。转述别人的不算。
-    """
-    t = (text or "").strip().lower()
-    if not t or len(t) > 24:
-        return False
-    if not any(w in t for w in _MUTE_WORDS):
-        return False
-    if any(k in t for k in ("让我们", "让他们", "让他", "叫我", "叫我们", "喊我们")):
-        return False
-    call_words = ["你"] + [str(n).lower() for n in (names or []) if str(n).strip()]
-    if len(t) > 12 and not any(k in t for k in call_words):
-        return False
-    return True
-
-
-def is_legacy_command(text: str) -> bool:
-    """旧前缀 `/` 开头的消息是指令，插话链路一律不碰。
-
-    指令前缀已经换成别的了，这些 `/xxx` 既不会命中指令，也不该被当成
-    群友闲聊去接话。
-    """
-    t = (text or "").lstrip()
-    return len(t) > 1 and t.startswith("/") and not t[1].isspace() and t[1] != "/"
-
-
-def strip_links(text: str) -> str:
-    """把链接和占位符抹掉，只留人话"""
-    t = _URL_RE.sub(" ", text or "")
-    t = _PLACEHOLDER_RE.sub(" ", t)
-    return re.sub(r"\s+", " ", t).strip()
 
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Plain, Reply
@@ -117,8 +40,7 @@ from .agent_runner import AGENT_AVAILABLE  # noqa: E402
 
 _MAIN_AGENT_OK = _BREAK_IMPORT_OK and AGENT_AVAILABLE
 
-
-class GroupProactiveHandler(HandlerContextMixin):
+class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixin):
     def __init__(self, context, cfg: dict, motive_mgr):
         self.context = context
         self.cfg = cfg
@@ -163,11 +85,21 @@ class GroupProactiveHandler(HandlerContextMixin):
         self._summary = SummaryStore(max_sessions=100)
         self._summary_pending: dict[str, list] = {}     # 攒够消息才整理
         self._summary_last_at: dict[str, float] = {}    # 上次整理时间（节流）
-        self._summary_tasks: set[asyncio.Task] = set()
+        self._bg_tasks: set[asyncio.Task] = set()
         # 成员印象：谁常找你、爱提问、爱发图、说话长短（纯统计）
         self._members = MemberStore(max_members=60)
         # 最近一次注入的場景快照，供面板展示「每次說話注入了什麼」
         self._last_scene: dict[str, dict[str, Any]] = {}
+
+    def cancel_background_tasks(self) -> None:
+        """终止时取消所有 fire-and-forget 任务，避免卸载后还在跑。"""
+        for task in list(self._bg_tasks):
+            try:
+                if not task.done():
+                    task.cancel()
+            except Exception:
+                pass
+        self._bg_tasks.clear()
 
     def _origin_caches(self) -> tuple[dict, ...]:
         """所有按 origin 一张表往里塞的容器，清理时统一过一遍。
@@ -200,28 +132,36 @@ class GroupProactiveHandler(HandlerContextMixin):
         # 先快照：下面遍历会连 _active_stamp 自己一起清，边清边查会
         # 把剩下的表都当成“没有活跃时间戳”而放过
         stamps = dict(self._active_stamp)
+        dead = {o for o, ts in stamps.items() if now - ts > 86400}
         for table in self._origin_caches():
-            for origin in [o for o in table if now - stamps.get(o, now) > 86400]:
+            for origin in [o for o in table if o in dead]:
                 table.pop(origin, None)
+
+        # 场景/总结/成员印象也要按「24h 未活跃」清理，不能只在超过 300 群时才做，
+        # 否则长期只加新群但总量不超限时这些表只增不减。
+        for origin in dead:
+            self._scene.clear(origin)
+            self._last_scene.pop(origin, None)
+            self._summary_pending.pop(origin, None)
+            self._summary_last_at.pop(origin, None)
+            self._summary.clear(origin)
+            self._members.clear(origin)
+
         if len(stamps) <= 300:
             return
         alive = set(sorted(stamps, key=stamps.get, reverse=True)[:300])
         for table in self._origin_caches():
             for origin in [o for o in table if o not in alive]:
                 table.pop(origin, None)
-        # 场景窗口同步清理
-        for origin in list(self._scene._sessions.keys()):
-            if origin not in alive:
-                self._scene.clear(origin)
-        for origin in list(self._last_scene.keys()):
-            if origin not in alive:
-                self._last_scene.pop(origin, None)
-        for origin in list(self._summary_pending.keys()):
-            if origin not in alive:
-                self._summary_pending.pop(origin, None)
-                self._summary_last_at.pop(origin, None)
-                self._summary.clear(origin)
-                self._members.clear(origin)
+        # 场景/总结/成员印象：与 24h 主清理对称，直接按 stamps - alive 遍历，
+        # 不挂在 _summary_pending.keys() 上，避免刚总结完 pending 为空的旧群被漏清。
+        for origin in set(stamps) - alive:
+            self._scene.clear(origin)
+            self._last_scene.pop(origin, None)
+            self._summary_pending.pop(origin, None)
+            self._summary_last_at.pop(origin, None)
+            self._summary.clear(origin)
+            self._members.clear(origin)
 
     def update_config(self, cfg: dict):
         self.cfg = cfg
@@ -294,8 +234,8 @@ class GroupProactiveHandler(HandlerContextMixin):
         self._summary_last_at[origin] = time.time()
         try:
             task = asyncio.create_task(self._summarize_session(origin, pending))
-            self._summary_tasks.add(task)
-            task.add_done_callback(self._summary_tasks.discard)
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
         except Exception as e:
             logger.debug("proactive_life | 总结任务创建失败: %s", e)
 
@@ -543,9 +483,11 @@ class GroupProactiveHandler(HandlerContextMixin):
                 for m in self.recent_context_cache.get(origin, [])[-4:]
             ]
             try:
-                asyncio.create_task(
+                task = asyncio.create_task(
                     self._judge_and_mute(origin, raw, recent, sender)
                 )
+                self._bg_tasks.add(task)
+                task.add_done_callback(self._bg_tasks.discard)
             except RuntimeError as e:
                 logger.debug("proactive_life | 闭嘴判定任务创建失败（loop 关闭？）: %s", e)
         msg = strip_links(raw)
@@ -625,148 +567,6 @@ class GroupProactiveHandler(HandlerContextMixin):
             return False
 
         return True
-
-    def _mute_store_path(self):
-        base = None
-        try:
-            from astrbot.core.star.star_tools import StarTools
-
-            base = StarTools.get_data_dir("astrbot_plugin_proactive_life")
-        except Exception:
-            try:
-                base = self.context.get_data_dir()
-            except Exception:
-                base = None
-        if not base:
-            return None
-        return os.path.join(str(base), "mute_until.json")
-
-    def _load_muted(self) -> dict[str, float]:
-        path = self._mute_store_path()
-        if not path or not os.path.exists(path):
-            return {}
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, ValueError, TypeError) as e:
-            logger.warning("proactive_life | 群静默记录读取失败，本次不静默: %s", e)
-            return {}
-        # 逐条容错：以前是一整个推导式套 float()，只要有半个坏值就
-        # 整个 except 掉，静默记录全丢
-        now = time.time()
-        out: dict[str, float] = {}
-        for k, v in (data or {}).items():
-            try:
-                ts = float(v)
-            except (TypeError, ValueError):
-                continue
-            if ts > now:
-                out[str(k)] = ts
-        return out
-
-    def _save_muted(self, raise_on_error: bool = False):
-        path = self._mute_store_path()
-        if not path:
-            return
-        tmp = path + ".tmp"
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self._muted_until, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, path)
-        except (OSError, TypeError, ValueError) as e:
-            logger.warning("proactive_life | 群静默记录落盘失败（重启后可能复发）: %s", e)
-            try:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-            except OSError:
-                pass
-            if raise_on_error:
-                raise
-
-    def _should_judge_mute(self, origin: str, text: str) -> bool:
-        """关键词没命中的时候，值不值得让模型再看一眼。
-
-        只在 Bot 刚开过口的窗口里判，而且只判短句 —— 长篇大论里出现个
-        "烦" 字八成跟她没关系。
-        """
-        t = (text or "").strip()
-        if not t or len(t) > 30:
-            return False
-        spoke_at = self._recent_bot_spoke.get(origin, {}).get("time", 0.0)
-        if time.time() - spoke_at > 600:
-            return False
-        return True
-
-    async def _judge_mute_by_llm(self, origin: str, msg: str, recent: list[str]) -> bool:
-        # 同一个群 90 秒内只判一次，免得一屏消息把模型打爆
-        now = time.time()
-        if now - self._mute_judge_at.get(origin, 0) < 90:
-            return False
-        self._mute_judge_at[origin] = now
-
-        try:
-            provider = self.context.get_using_provider(origin)
-        except Exception as e:
-            logger.debug("proactive_life | 闭嘴判定取模型失败，跳过判定: %s", e)
-            provider = None
-        if provider is None:
-            return False
-
-        ctx = "\n".join(f"- {line}" for line in recent[-4:]) or "（无）"
-        prompt = (
-            f"群里最近几条消息：\n{ctx}\n\n"
-            f"现在这条：{msg}\n\n"
-            f"问题：这句话是不是在嫌{self._bot_name()}（群里一个话偏多的成员）话多、"
-            "让 Bot 闭嘴、别插话、安静一会儿？\n"
-            "如果是在转述别人的话、在开玩笑、或者说的根本不是 Bot，一律算 NO。\n"
-            "只回 YES 或 NO。"
-        )
-        try:
-            resp = await asyncio.wait_for(
-                provider.text_chat(
-                    prompt=prompt,
-                    system_prompt="你只回 YES 或 NO，不要解释，不要加标点。",
-                    contexts=[],
-                ),
-                timeout=8,
-            )
-        except Exception as e:
-            logger.debug("proactive_life | 闭嘴判定模型调用失败，按 NO 处理: %s", e)
-            return False
-        ans = (getattr(resp, "completion_text", "") or "").strip().upper()
-        return ans.startswith("YES") or ans.startswith("是")
-
-    async def _judge_and_mute(self, origin: str, msg: str, recent: list[str], by: str):
-        try:
-            if await self._judge_mute_by_llm(origin, msg, recent):
-                minutes = float(self.cfg.get("群聊插话_闭嘴静默分钟", 15.0) or 0)
-                self._mute_group(origin, minutes, by)
-        except Exception as e:
-            # fire-and-forget task 的例外不会有人接，必须在这里留痕
-            logger.debug("proactive_life | 闭嘴判定后台任务失败: %s", e)
-
-    def _is_muted(self, origin: str) -> bool:
-        until = self._muted_until.get(origin, 0.0)
-        if not until:
-            return False
-        if time.time() >= until:
-            self._muted_until.pop(origin, None)
-            return False
-        return True
-
-    def _mute_group(self, origin: str, minutes: float, by: str = ""):
-        if minutes <= 0:
-            return
-        until = time.time() + minutes * 60.0
-        # 已经在静默里就别把时间往后推，免得连着喊两句就锁死一小时
-        if self._muted_until.get(origin, 0.0) >= until:
-            return
-        self._muted_until[origin] = until
-        self._save_muted()
-        self._diag(origin, f"被 {by or '群友'} 要求闭嘴，静默 {int(minutes)} 分钟")
-        # 被要求闭嘴，情绪走低
-        self._mood_apply(origin, "muted", "被要求闭嘴")
 
     def _diag(self, origin: str, msg: str):
         """群插话诊断日志：每群 10 分钟最多一条，用来定位到底卡在哪个判定条件"""
@@ -979,168 +779,6 @@ class GroupProactiveHandler(HandlerContextMixin):
         else:
             self._diag(origin, f"掷骰未中 p={boosted:.3f} 积压{streak}条")
         return should_reply, reply_reason, is_responding_to_bot
-
-    def _context_aware_active(self) -> bool:
-        """检查原 context_aware 外挂是否启用；启用时避免重复注入 conversation_scene。"""
-        if not bool(self.cfg.get("场景感知_让位contextaware", True)):
-            return False
-        try:
-            meta = self.context.get_registered_star("astrbot_plugin_context_aware")
-            return bool(meta and getattr(meta, "activated", False))
-        except Exception:
-            return False
-
-    def _build_scene_block(self, origin: str) -> str:
-        """用场景感知生成 <conversation_scene>；失败时回空串（降级不影响接话）。"""
-        if not self._module_on("上下文"):
-            return ""
-        if not bool(self.cfg.get("场景感知_启用", True)):
-            return ""
-        if self._context_aware_active():
-            # 原 context_aware 正在注入同类场景，避免 LLM 收到两份重叠提示
-            return ""
-        try:
-            win_size = max(2, int(self._scene_cfg("场景感知_对话窗口", 8) or 8))
-            show_flow = bool(self._scene_cfg("场景感知_显示对话流", True))
-            strict = bool(self._scene_cfg("场景感知_严格模式", False))
-            window = self._scene.recent(origin, win_size + 1)
-            if not window:
-                return ""
-            from copy import copy as _copy
-            current = _copy(window[-1])  # 避免严格模式改写污染共享历史
-            # 被动接话都是主动插入，直接按主动场景告知模型（不依赖 event extra）
-            trigger, desc = "active", "你是主动加入这个对话的，没有人在叫你"
-            # 严格模式：不把当前消息推断成「在跟 Bot 说」
-            if strict and current.talking_to == "bot":
-                current.talking_to, current.talking_to_name = "group", "群聊"
-            # 短期总结：注入跨轮笔记，让接话像「记得聊过什么」
-            summary_text = ""
-            if bool(self._scene_cfg("场景感知_总结启用", True)):
-                note = self._summary.get(origin)
-                if note and not note.is_empty():
-                    summary_text = note.render(
-                        max_items=max(2, int(self._scene_cfg("场景感知_总结条数", 6) or 6)),
-                    )
-            # 成员印象：当前发言人的说话习惯，让回应因人而异
-            member_note = ""
-            if bool(self._scene_cfg("拟人_成员印象", True)):
-                member_note = self._members.render(origin, current.sender_id)
-            scene = self._scene_gen.generate(
-                trigger, desc, current, window[:-1],
-                show_flow=show_flow, summary=summary_text, member_note=member_note,
-            )
-            # 保存快照：面板用它展示「最近一次注入的上下文」
-            self._last_scene[origin] = {
-                "at": time.time(),
-                "text": scene,
-                "trigger": trigger,
-                "chars": len(scene),
-                "flow_count": (max(0, len(window) - 1) if show_flow else 0),
-                "talking_to": current.talking_to_name or current.talking_to,
-                "has_summary": bool(summary_text),
-                "member_note": member_note,
-            }
-            return scene
-        except Exception as e:
-            logger.debug("proactive_life | 场景提示生成失败: %s", e)
-            return ""
-
-    def _persona_hint(self) -> str:
-        """把拟人参数转成自然语言指令，注入接话 prompt。
-
-        三个维度：话多程度 / 沉默倾向 / 吐槽强度，各自分档给不同指令。
-        """
-        def clamp(v, default=50):
-            try:
-                return max(0, min(100, int(v)))
-            except (TypeError, ValueError):
-                return default
-
-        talk = clamp(self._scene_cfg("拟人_话多程度", 50))
-        quiet = clamp(self._scene_cfg("拟人_沉默倾向", 45))
-        snark = clamp(self._scene_cfg("拟人_吐槽强度", 50))
-
-        # 话多程度：影响句数与展开意愿
-        if talk <= 25:
-            length = "只说最短的一句，能一个词就别一句话，绝不展开。"
-        elif talk <= 50:
-            length = "一两短句说完就停，不主动展开话题。"
-        elif talk <= 75:
-            length = "可以聊两句，接梗后顺带补一句自己的看法，但仍别写长段落。"
-        else:
-            length = "话可以多一点，接梗后多聊两句、顺着话题延伸，但也别写成小作文。"
-
-        # 沉默倾向：影响「没话说时」的态度
-        if quiet >= 75:
-            attitude = (
-                "没有真正想说的就别开口；群聊是大家的，你不挨个回答。"
-                "宁可跳过也不硬凑，只挑真有意思或真想说的那句接。"
-            )
-        elif quiet >= 50:
-            attitude = "只在真有话想说、或话题你真有兴趣时接；没想法就安静。"
-        elif quiet >= 25:
-            attitude = "多数时候自然搭一句，只有气氛明显不适合时才沉默。"
-        else:
-            attitude = "乐于搭话，看到消息就自然接一句，别让人觉得你冷淡。"
-
-        # 吐槽强度：影响语气
-        if snark >= 75:
-            tone = "嘴毒一点，爱吐槽抖机灵，但也别真伤人——玩笑式吐槽，不是攻击。"
-        elif snark >= 50:
-            tone = "可以随口吐槽、带点调侃，语气轻松不认真说教。"
-        elif snark >= 25:
-            tone = "温和吐槽就好，以附和、认同为主，偶尔调侃一句。"
-        else:
-            tone = "温和友善，以附和、鼓励为主，避免任何可能让人不舒服的调侃。"
-
-        return (
-            "【说话风格（按这组参数来，优先级高于一般客套）】\n"
-            f"- 篇幅：{length}\n"
-            f"- 开口意愿：{attitude}\n"
-            f"- 语气：{tone}"
-        )
-
-    def _build_passive_prompt(
-        self, origin: str, msg_str: str, is_responding_to_bot: bool, current_sender: str
-    ) -> str:
-        """依据上下文组出接话 prompt，不碰事件与状态。
-
-        融入场景感知：<conversation_scene> 告诉模型谁在跟谁说话、它是不是被叫，
-        避免把别人之间的对话当成问自己（抢答）；再叠加反应多样性与护栏。
-        """
-        scene = self._build_scene_block(origin)
-        mood_part = self._mood_hint(origin)
-
-        # 反应方式多样性 + 拟人参数（话多/沉默/吐槽）共同决定怎么说
-        reaction_hint = (
-            "怎么回应自己挑，别每次都一个样：\n"
-            "- 好笑的：接梗、抖一句、跟着哈哈；\n"
-            "- 有同感的：附和一句，站队或吐槽，不用长篇；\n"
-            "- 有看法的：说句真心话或主观吐槽，说完就停；\n"
-            "- 没啥好说的：一句语气词（啊 / 草 / 啊这 / 嗯），或按下面的沉默倾向处理。\n\n"
-            + self._persona_hint()
-        )
-
-        scene_part = ((scene + "\n\n") if scene else "") + mood_part
-        if is_responding_to_bot:
-            bot_last_words = self._recent_bot_spoke.get(origin, {}).get("text", "")
-            return (
-                scene_part +
-                f"你刚才在群里说的是：「{bot_last_words}」\n"
-                f"{current_sender} 接着说：{msg_str}\n\n"
-                f"{reaction_hint}\n\n"
-                f"{self._GUARDRAIL}\n\n"
-                f"他在接你的话。像真人一样自然回一句就行，不用解释、不用报幕。"
-            )
-        return (
-            scene_part +
-            f"{current_sender} 刚说：{msg_str}\n\n"
-            f"{reaction_hint}\n\n"
-            f"{self._GUARDRAIL}\n\n"
-            f"你在旁边看聊天，挑一个此刻最自然的反应说出来，哪怕只是一个语气词。"
-            f"先看清场景提示：如果这条明显是在跟别人说话，别抢答。"
-            f"只输出要说的话本身。"
-        )
 
     async def handle_group_message_passive(self, event: AstrMessageEvent):
         """

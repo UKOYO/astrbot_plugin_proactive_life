@@ -18,8 +18,13 @@
     <span class="ghost ghost--4">叙事</span>
   </div>
 
-  <!-- 框外黑色磨砂玻璃：只模糊/压暗框外，框内保持清晰 -->
-  <div class="frost" aria-hidden="true"></div>
+  <!-- 框外磨砂玻璃：四条边带分别模糊，不依赖 clip-path(evenodd)，兼容性更好 -->
+  <div class="frost" aria-hidden="true">
+    <span class="frost__band frost__band--top"></span>
+    <span class="frost__band frost__band--bottom"></span>
+    <span class="frost__band frost__band--left"></span>
+    <span class="frost__band frost__band--right"></span>
+  </div>
 
   <!-- 细线边框，模拟参考站的 frame -->
   <div class="frame" aria-hidden="true">

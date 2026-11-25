@@ -8,11 +8,14 @@ from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.agent.mcp_client import MCPTool
 
-from .common import DEFAULT_TARGET_UID, parse_quiet_hours
+from .common import parse_quiet_hours
 from .handler_base import HandlerContextMixin
 from .agent_runner import (
     build_agent_config, make_request, run_agent,
 )
+
+# 摸鱼 agent 用來虛构會話的系統標識（不是任何人的 QQ 號，也不依賴「對誰主動」配置）
+_WORKER_VIRTUAL_UID = "system_worker"
 
 # 默认探索方向（用户没自定义时使用）；中性通用，不绑定任何人的兴趣或特定工具
 _DEFAULT_EXPLORE_INTENT = """1. **近期热点与新闻**：用可用的联网搜索查查今天/本周的新鲜事、行业动态或大家正在讨论的话题；
@@ -160,10 +163,10 @@ class AutonomousWorkerHandler(HandlerContextMixin):
             for inst in self.context.platform_manager.get_insts():
                 pid = getattr(getattr(inst, "metadata", None), "id", None)
                 if pid:
-                    session = MessageSession.from_str(f"{pid}:FriendMessage:{DEFAULT_TARGET_UID}")
+                    session = MessageSession.from_str(f"{pid}:FriendMessage:{_WORKER_VIRTUAL_UID}")
                     break
             if not session:
-                session = MessageSession.from_str(f"aiocqhttp:FriendMessage:{DEFAULT_TARGET_UID}")
+                session = MessageSession.from_str(f"aiocqhttp:FriendMessage:{_WORKER_VIRTUAL_UID}")
 
             now_str = now.strftime("%Y-%m-%d %H:%M")
             recent_topics = ""
@@ -183,7 +186,7 @@ class AutonomousWorkerHandler(HandlerContextMixin):
                 context=self.context,
                 session=session,
                 message=prompt,
-                sender_id=DEFAULT_TARGET_UID,
+                sender_id=_WORKER_VIRTUAL_UID,
                 sender_name=self._bot_name(),
             )
 
@@ -216,7 +219,7 @@ class AutonomousWorkerHandler(HandlerContextMixin):
                     logger.info("proactive_life | 自主探索成果已沉淀进动机池 (%s): %s", m_scope, clean[:50])
                     self._log_activity("worker", f"摸鱼沉淀（{m_scope}）：{clean[:24]}")
                     # 摸到有意思的东西，情绪会兴奋一点（记在私聊对象上，开口时体现）
-                    self._mood_apply(DEFAULT_TARGET_UID, "explored", "摸鱼有收获")
+                    self._mood_apply(_WORKER_VIRTUAL_UID, "explored", "摸鱼有收获")
 
             self.last_work_time = time.time()
             return True

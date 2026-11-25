@@ -13,7 +13,7 @@ from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.message_session import MessageSession
 
-from .common import DEFAULT_TARGET_UID, scheduler_data_path, parse_quiet_hours
+from .common import parse_quiet_hours
 from .handler_base import HandlerContextMixin
 from .agent_runner import (
     build_agent_config, make_request, attach_history, run_agent,
@@ -243,29 +243,26 @@ class PrivateProactiveHandler(HandlerContextMixin):
             return ""
 
     def _load_state(self):
-        try:
-            if self.state_file.exists():
-                self.state = json.loads(self.state_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError) as e:
-            logger.warning("proactive_life | 私聊状态读取失败，按空状态启动: %s", e)
+        from .safe_io import sync_read_json
+
+        st = sync_read_json(
+            self.state_file, {},
+            log_prefix="proactive_life | 私聊状态读取失败，按空状态启动",
+        )
+        self.state = st if isinstance(st, dict) else {}
         for k in ("last_user_msg", "last_active", "daily", "pending_inquiries"):
             self.state.setdefault(k, {})
 
     def _save_state(self, raise_on_error: bool = False):
-        # 先写临时文件再 replace：直接 write_text 覆盖，进程在写一半时被杀
-        # 会留下半截 JSON，下次 _load_state 解析失败就把整份状态清零
-        try:
-            self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.state_file.with_name(self.state_file.name + ".tmp")
-            tmp.write_text(
-                json.dumps(self.state, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            tmp.replace(self.state_file)
-        except (OSError, TypeError, ValueError) as e:
-            logger.warning("proactive_life | 私聊状态落盘失败: %s", e)
-            if raise_on_error:
-                raise
+        # 原子写由 safe_io 统一处理，避免半截 JSON 导致状态清零
+        from .safe_io import sync_write_json
+
+        ok = sync_write_json(
+            self.state_file, self.state,
+            log_prefix="proactive_life | 私聊状态落盘失败",
+        )
+        if not ok and raise_on_error:
+            raise OSError(f"写入 {self.state_file} 失败")
 
     def record_user_message(self, uid: str):
         uid_str = str(uid)
@@ -281,7 +278,7 @@ class PrivateProactiveHandler(HandlerContextMixin):
     def record_bot_message(self, uid: str, text: str):
         """记录 Bot 发送给用户的私聊消息，若有疑问或挂念则注册待追问任务"""
         uid_str = str(uid)
-        targets = [str(x) for x in (self.cfg.get("对谁主动") or [DEFAULT_TARGET_UID])]
+        targets = [str(x).strip() for x in (self.cfg.get("对谁主动") or []) if str(x).strip()]
         if uid_str not in targets:
             return
 
@@ -430,7 +427,7 @@ class PrivateProactiveHandler(HandlerContextMixin):
         expire_sec = int(self.cfg.get("追问过期秒数", 1800))
 
         now_ts = time.time()
-        targets = [str(x) for x in (self.cfg.get("对谁主动") or [DEFAULT_TARGET_UID])]
+        targets = [str(x).strip() for x in (self.cfg.get("对谁主动") or []) if str(x).strip()]
 
         for uid in targets:
             inquiry = self.state.get("pending_inquiries", {}).get(uid)
@@ -507,7 +504,7 @@ class PrivateProactiveHandler(HandlerContextMixin):
         if now.hour in quiet:
             return False
 
-        targets = [str(x) for x in (self.cfg.get("对谁主动") or [DEFAULT_TARGET_UID])]
+        targets = [str(x).strip() for x in (self.cfg.get("对谁主动") or []) if str(x).strip()]
         for uid in targets:
             spoken = await self._check_single_user(uid, now)
             if spoken:

@@ -1,34 +1,30 @@
-import json
 import time
 import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from astrbot.api import logger
 
 class MotiveManager:
     def __init__(self, storage_path: Path):
         self.storage_path = storage_path
 
     def _load_data(self) -> Dict[str, Any]:
-        try:
-            if self.storage_path.exists():
-                return json.loads(self.storage_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError) as e:
-            # 解析失败或读取异常时返回空池，但必须留痕，免得整个心事库被悄悄清空
-            logger.warning("proactive_life | 动机池读取失败，本次按空池处理: %s", e)
-        return {"motives": []}
+        from .safe_io import sync_read_json
+
+        data = sync_read_json(
+            self.storage_path, {"motives": []},
+            log_prefix="proactive_life | 动机池读取失败，本次按空池处理",
+        )
+        return data if isinstance(data, dict) else {"motives": []}
 
     def _save_data(self, data: Dict[str, Any]) -> None:
-        # 原子写：write_text 直接覆盖时被杀会留半截 JSON，_load_data 解析失败
-        # 会返回空池，等于整个心事库被清空
-        try:
-            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.storage_path.with_name(self.storage_path.name + ".tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(self.storage_path)
-        except (OSError, TypeError, ValueError) as e:
-            logger.warning("proactive_life | 动机池落盘失败: %s", e)
+        # 原子写由 safe_io 统一处理，避免半截 JSON 导致整个心事库被清空
+        from .safe_io import sync_write_json
+
+        sync_write_json(
+            self.storage_path, data,
+            log_prefix="proactive_life | 动机池落盘失败",
+        )
 
     def get_recent_summary(self, limit: int = 10) -> str:
         """获取最近探索记录摘要，用于传给摸鱼探索 prompt 做去重引导"""

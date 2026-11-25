@@ -118,36 +118,36 @@ body { zoom: var(--fs); }
   100% { transform: translate(2vw, -1.5vw) scale(1.05); }
 }
 
-/* ---------------------------------------------------------------- 框外黑色磨砂玻璃 */
-/* 用 clip-path 把中间（框内）挖空，只对外圈做模糊 + 压暗。
-   evenodd 路径：外层整屏矩形 - 内层 frame 矩形。 */
+/* ---------------------------------------------------------------- 框外磨砂玻璃 */
+/* 用四条边带分别模糊框外，不依赖 clip-path(evenodd)。
+   某些 WebView / 旧版浏览器不支持 polygon 的 evenodd 关键字，
+   一旦整条声明被丢弃，磨砂层就会盖住框内，导致整页被糊掉。 */
 .frost {
   position: fixed;
   inset: 0;
-  z-index: 5;                    /* 在粒子/模糊字(z0-1)之上，内容(z2)与边框(z10)之下 */
+  z-index: 5;                    /* 粒子/幽灵字(z0-1)之上，内容(z2)/边框(z10)之下 */
   pointer-events: none;
+}
+.frost__band {
+  position: absolute;
   background: rgba(0, 0, 0, .55);
   -webkit-backdrop-filter: blur(14px) saturate(.7);
   backdrop-filter: blur(14px) saturate(.7);
-  clip-path: polygon(
-    evenodd,
-    0 0, 100% 0, 100% 100%, 0 100%, 0 0,
-    var(--pad) var(--pad),
-    var(--pad) calc(100% - var(--pad)),
-    calc(100% - var(--pad)) calc(100% - var(--pad)),
-    calc(100% - var(--pad)) var(--pad),
-    var(--pad) var(--pad)
-  );
 }
+.frost__band--top    { top: 0; left: 0; right: 0; height: var(--pad); }
+.frost__band--bottom { bottom: 0; left: 0; right: 0; height: var(--pad); }
+.frost__band--left   { top: var(--pad); bottom: var(--pad); left: 0; width: var(--pad); }
+.frost__band--right  { top: var(--pad); bottom: var(--pad); right: 0; width: var(--pad); }
+
 /* 白昼模式：框外改用白色磨砂，与近白背景一致，不再压黑 */
-[data-theme="light"] .frost {
+[data-theme="light"] .frost__band {
   background: rgba(255, 255, 255, .55);
   -webkit-backdrop-filter: blur(16px) saturate(.8) brightness(1.05);
   backdrop-filter: blur(16px) saturate(.8) brightness(1.05);
 }
 /* 系统浅色（未显式设 data-theme）也走白色磨砂 */
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) .frost {
+  :root:not([data-theme="dark"]) .frost__band {
     background: rgba(255, 255, 255, .55);
     -webkit-backdrop-filter: blur(16px) saturate(.8) brightness(1.05);
     backdrop-filter: blur(16px) saturate(.8) brightness(1.05);
@@ -754,17 +754,90 @@ body.is-monospaced .sec__head span { font-family: var(--mono); }
 }
 .toast:empty { display: none; }
 
-/* ---------------------------------------------------------------- 窄屏 */
+/* ---------------------------------------------------------------- 窄屏 / 平板 */
 @media (max-width: 900px) {
   .siteHeader { position: relative; left: auto; top: auto; width: auto; padding: var(--pad); }
   .siteHeader__title { font-size: 42px; }
-  .siteHeader__nav { margin-top: 28px; }
-  .siteHeader__nav ol { flex-direction: row; gap: 24px; }
+  .siteHeader__nav { margin-top: 24px; }
+  .siteHeader__nav ol {
+    flex-direction: row; flex-wrap: wrap; gap: 10px 20px;
+  }
+  .siteHeader__nav li ._dot { display: none; }   /* 横排时小圆点会错位 */
+  .siteHeader__nav li.is-selected ._text { font-size: 14px; }
   .pulse { position: relative; left: auto; bottom: auto; padding: 0 var(--pad); }
-  .content { margin-left: 0; padding: var(--pad); }
-  .content__inner { margin: 0; }
+  .content { margin-left: 0; padding: var(--pad) var(--pad) 120px; }
+  .content__inner { margin: 0; max-width: none; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .metric:nth-child(3) { border-left: none; }
-  .pair, .conf { grid-template-columns: 1fr; }
+  .pair, .conf { grid-template-columns: 1fr; gap: 0; }
+  .dstats { grid-template-columns: repeat(2, 1fr); gap: 0 24px; }
   .sec { text-align: left; }
+  /* 固定装饰在窄屏没有意义，还挤占空间 */
+  .frost, .frame, .theme-switch, .scroll-watch { display: none !important; }
+  .zoomer { right: var(--pad); top: var(--pad); }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tbl { min-width: 520px; }
+}
+
+/* ---------------------------------------------------------------- 手机 */
+@media (max-width: 600px) {
+  :root { --pad: 14px; }
+  .siteHeader { padding: 18px 14px 10px; }
+  .siteHeader__title { font-size: 34px; }
+  .siteHeader__label { margin-top: 8px; font-size: 10px; }
+  .siteHeader__nav { margin-top: 18px; }
+  .siteHeader__nav ol { gap: 8px 14px; }
+  .siteHeader__nav li ._text { font-size: 12.5px; }
+  .siteHeader__nav li.is-selected ._text { font-size: 13px; }
+
+  .content { padding: 18px 14px 96px; }
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .metric, .metric + .metric { padding: 12px 8px; }
+  .metric dd { font-size: 20px; }
+  /* 手机上的时间戳太长，允许换行，避免被裁掉 */
+  .metric dd.time, .metrics .metric dd.time {
+    font-size: 11px !important; white-space: normal !important;
+    line-height: 1.35; word-break: break-all;
+  }
+  .metric:nth-child(3) dd { font-size: 16px; }
+  .sec__head { flex-wrap: wrap; gap: 6px; }
+  .sec__head > span { font-size: 22px; }
+
+  /* 表单与列表单栏，避免横向裁切 */
+  .conf, .pair, .dstats, .cards, .schedule__edit { grid-template-columns: 1fr !important; }
+  .field { padding: 10px 0; }
+  .chip { font-size: 11px; padding: 2px 5px 2px 9px; }
+  .chip__input { min-width: 70px; width: 70px; }
+
+  /* 活动行：时间/标签/内容竖排，避免挤在一起 */
+  /* 活动行：改两列网格，文字占满第二行，避免挤在一起 */
+  .activity__row {
+    grid-template-columns: 64px 1fr; gap: 4px 10px;
+  }
+  .activity__kind { justify-self: start; }
+  .activity__row .activity__text {
+    grid-column: 1 / -1;
+    white-space: normal !important; overflow: visible !important;
+    text-overflow: clip !important; line-height: 1.5;
+    word-break: break-word;
+  }
+
+  /* 冲突提示、toast 不超出屏幕 */
+  .conflict__row { flex-wrap: wrap; }
+  .toast { max-width: calc(100vw - 28px); font-size: 10.5px; }
+
+  .zoomer__btn { padding: 2px 4px; }
+  .zoomer__val { min-width: 28px; font-size: 9px; }
+  .pulse { padding: 0 14px; }
+}
+
+/* ---------------------------------------------------------------- 超窄屏 */
+@media (max-width: 380px) {
+  .siteHeader__title { font-size: 28px; }
+  .siteHeader__nav ol { gap: 6px 10px; }
+  .siteHeader__nav li ._text { font-size: 11.5px; }
+  .metric dd { font-size: 17px; }
+  .metric dd.time { font-size: 12px; }
+  .sec__head > span { font-size: 20px; }
+  .tbl { min-width: 440px; }
 }

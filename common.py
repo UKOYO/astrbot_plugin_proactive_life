@@ -6,8 +6,31 @@ import re
 from pathlib import Path
 from typing import Any
 
-# 預設私聊對象；只作为配置缺失时的兜底，面板/配置文件仍可覆盖。
-DEFAULT_TARGET_UID = "2157195950"
+from astrbot.api import logger
+
+
+def _debug(msg: str, err: BaseException | None = None) -> None:
+    """统一 debug 日志：框架 API 边界失败时留痕，避免静默失效难排查。"""
+    try:
+        if err is None:
+            logger.debug("proactive_life | %s", msg)
+        else:
+            logger.debug("proactive_life | %s: %s", msg, err)
+    except Exception:
+        pass
+
+
+def _fallback_data_dir() -> Path:
+    """跨平台兜底資料目錄：優先用 AstrBot 的 data dir，再次用家目錄。
+
+    不再寫死任何絕對路徑，Linux/macOS/Windows 都能用。
+    """
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+        return Path(str(get_astrbot_data_path())) / "plugin_data"
+    except Exception:
+        return Path.home() / "AstrBot" / "data" / "plugin_data"
 
 # 舊版 life_scheduler 外掛的資料目錄名；仅用于在 AstrBot data dir 下定位。
 SCHEDULER_PLUGIN_DIR = "astrbot_plugin_life_scheduler"
@@ -51,8 +74,8 @@ def get_chat_provider(context: Any, umo: str | None = None):
         fn = getattr(context, "get_using_provider", None)
         if callable(fn):
             return fn(umo) if umo else fn()
-    except Exception:
-        pass
+    except Exception as e:
+        _debug("get_using_provider 调用失败，尝试兼容回退", e)
     # 兼容：某些版本/包装对象仍暴露 provider_manager
     pm = getattr(context, "provider_manager", None)
     if pm is None:
@@ -68,7 +91,8 @@ def get_chat_provider(context: Any, umo: str | None = None):
         if ptype is not None:
             return pm.get_using_provider(ptype, umo=umo) if umo else pm.get_using_provider(ptype)
         return pm.get_using_provider()
-    except Exception:
+    except Exception as e:
+        _debug("provider_manager.get_using_provider 失败", e)
         return None
 
 
@@ -81,12 +105,13 @@ def get_provider_by_id(context: Any, provider_id: str | None):
         fn = getattr(context, "get_provider_by_id", None)
         if callable(fn):
             return fn(pid)
-    except Exception:
-        pass
+    except Exception as e:
+        _debug(f"get_provider_by_id({pid}) 失败，尝试兼容回退", e)
     pm = getattr(context, "provider_manager", None)
     try:
         return pm.get_provider_by_id(pid) if pm else None
-    except Exception:
+    except Exception as e:
+        _debug(f"provider_manager.get_provider_by_id({pid}) 失败", e)
         return None
 
 
@@ -135,7 +160,7 @@ def scheduler_data_path() -> Path:
 
         return Path(str(get_astrbot_data_path())) / "plugin_data" / SCHEDULER_PLUGIN_DIR
     except Exception:
-        return Path("E:/AstrBot-hermes/data/plugin_data") / SCHEDULER_PLUGIN_DIR
+        return _fallback_data_dir() / SCHEDULER_PLUGIN_DIR
 
 
 HUB_PLUGIN_NAME = "astrbot_plugin_proactive_life"
@@ -148,7 +173,7 @@ def hub_data_path() -> Path:
 
         return Path(str(StarTools.get_data_dir(HUB_PLUGIN_NAME)))
     except Exception:
-        return Path("E:/AstrBot-hermes/data/plugin_data") / HUB_PLUGIN_NAME
+        return _fallback_data_dir() / HUB_PLUGIN_NAME
 
 
 def schedule_files() -> list[Path]:
@@ -200,13 +225,10 @@ class ScheduleReader:
         按 candidates 顺序取第一份「当天有内容」的；都没有则返回空结构。
         """
         date_str = _business_date(self.schedule_time, now)
+        from .safe_io import sync_read_json
+
         for path in self._candidates():
-            try:
-                if not path.exists():
-                    continue
-                raw = json.loads(path.read_text(encoding="utf-8-sig"))
-            except Exception:
-                continue
+            raw = sync_read_json(path, None)
             entry = raw.get(date_str) if isinstance(raw, dict) else None
             if not isinstance(entry, dict):
                 continue
