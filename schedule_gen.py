@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import random
@@ -64,6 +65,7 @@ DEFAULT_PROMPT_TEMPLATE = """# Role: Life Scheduler
 
 ## 参考信息
 {recent_chats}
+{weather}
 
 ## 强制约束（必须严格遵循）
 - 你必须严格遵循穿搭风格：【{outfit_style}】（不得替换/混用其他风格）。
@@ -138,8 +140,6 @@ class ScheduleStore:
             self.path, None,
             log_prefix="proactive_life | 日程文件读取失败，按空处理",
         )
-        if not isinstance(raw, dict):
-            return
         if not isinstance(raw, dict):
             return
         for date_str, item in raw.items():
@@ -277,6 +277,15 @@ class ScheduleGenerator:
         except Exception:
             return ""
 
+    def _weather_text(self) -> str:
+        """今日天气，供穿搭/活动贴合真实天气；失败返回空串。"""
+        try:
+            from .modules.weather import weather_prompt
+
+            return weather_prompt(self.cfg)
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _recent_explorations(self, limit: int = 5) -> str:
         try:
             from .common import hub_data_path
@@ -384,9 +393,26 @@ class ScheduleGenerator:
             prov = get_chat_provider(self.context)
         if prov is None:
             raise RuntimeError("没有可用的聊天模型")
-        # 空回复重试一次（原插件行为）
+        # 空回复重试一次（原插件行为）；每次调用都有硬超时，
+        # 否则中转接口卡死会把 self._busy 一直占住，面板再也生成不了日程。
+        try:
+            llm_timeout = float(self._cfg("日程_生成超时秒", 90) or 90)
+        except (TypeError, ValueError):
+            llm_timeout = 90.0
+        llm_timeout = max(15.0, llm_timeout)
         for attempt in range(2):
-            resp = await prov.text_chat(prompt=prompt, system_prompt="")
+            try:
+                resp = await asyncio.wait_for(
+                    prov.text_chat(prompt=prompt, system_prompt=""),
+                    timeout=llm_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "proactive_life | 日程生成超时（%.0fs），第 %d 次", llm_timeout, attempt + 1
+                )
+                if attempt == 1:
+                    raise RuntimeError(f"模型生成超时 {llm_timeout:.0f}s")
+                continue
             text = _safe_text(resp)
             if text:
                 return text
@@ -439,6 +465,7 @@ class ScheduleGenerator:
                 "history_schedules": self._history_text(d.date()),
                 "recent_chats": await self._recent_chats(umo),
                 "recent_explorations": self._recent_explorations(),
+                "weather": self._weather_text(),
                 **picks,
             }
             prompt = self.build_prompt(ctx, str(extra or "").strip())

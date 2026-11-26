@@ -7,6 +7,10 @@ from typing import Optional, Dict, Any
 class MotiveManager:
     def __init__(self, storage_path: Path):
         self.storage_path = storage_path
+        # 被动回复热路径要读「最近一条未消费心事」，每次都读盘会抖，
+        # 这里用 (mtime, size) 做失效判断的内存缓存。
+        self._peek_cache: Optional[Dict[str, Any]] = None
+        self._peek_stamp: tuple = ()
 
     def _load_data(self) -> Dict[str, Any]:
         from .safe_io import sync_read_json
@@ -15,7 +19,32 @@ class MotiveManager:
             self.storage_path, {"motives": []},
             log_prefix="proactive_life | 动机池读取失败，本次按空池处理",
         )
-        return data if isinstance(data, dict) else {"motives": []}
+        data = data if isinstance(data, dict) else {"motives": []}
+        try:
+            st = self.storage_path.stat()
+            self._peek_stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            self._peek_stamp = ()
+        self._peek_cache = data
+        return data
+
+    def peek_latest_unused(self) -> str:
+        """只读：最近一条未被私聊消费的心事文本（带文件戳缓存，热路径可用）。"""
+        try:
+            st = self.storage_path.stat()
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = ()
+        if self._peek_cache is None or stamp != self._peek_stamp:
+            self._load_data()
+        data = self._peek_cache or {}
+        for m in reversed(data.get("motives") or []):
+            if not isinstance(m, dict) or m.get("private_used", False):
+                continue
+            text = str(m.get("content") or "").strip()
+            if text:
+                return text
+        return ""
 
     def _save_data(self, data: Dict[str, Any]) -> None:
         # 原子写由 safe_io 统一处理，避免半截 JSON 导致整个心事库被清空
@@ -91,6 +120,20 @@ class MotiveManager:
                         continue
                     return m
         return None
+
+    def delete_motive(self, motive_id: str) -> bool:
+        """按 id 删除一条心事；返回是否真的删掉。"""
+        mid = str(motive_id or "").strip()
+        if not mid:
+            return False
+        data = self._load_data()
+        motives = list(data.get("motives") or [])
+        kept = [m for m in motives if str(m.get("id") or "") != mid]
+        if len(kept) == len(motives):
+            return False
+        data["motives"] = kept
+        self._save_data(data)
+        return True
 
     def mark_private_used(self, motive_id: str) -> None:
         data = self._load_data()

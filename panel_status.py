@@ -173,6 +173,114 @@ def _rhythm_block(plugin) -> dict:
         else None,
     }
 
+def _outbound_block(plugin) -> dict:
+    """出站清洗：规则清单（透明公开）+ 最近实际改了什么。"""
+    try:
+        from .modules.outbound import polish_history
+
+        history = polish_history()
+    except Exception:
+        history = []
+
+    rules: list[dict] = []
+    categories: list[dict] = []
+    name_map: dict[str, str] = {}
+    try:
+        from .modules.polish_ai_rules import category_catalog, rule_catalog
+
+        rules = rule_catalog()
+        categories = category_catalog()
+        # 分级治理：高确定性裁剪规则 + 高风险「只检测」规则
+        try:
+            from .modules.polish_bagu import risk_rule_catalog, trim_rule_catalog
+
+            rules = rules + trim_rule_catalog() + risk_rule_catalog()
+            categories = categories + [
+                {"key": "trim", "label": "自动裁剪（高确定性）", "count": len(trim_rule_catalog())},
+                {"key": "risk_only", "label": "只检测不改写（高风险）", "count": len(risk_rule_catalog())},
+            ]
+        except Exception:
+            pass
+        for r in rules:
+            name_map[r["id"]] = r["name"]
+        name_map.update({
+            "delete_phrases": "删套话短语",
+            "softeners": "水词配额",
+            "merge_short": "合并碎句",
+            "trim_ending": "删结尾升华",
+            "orphan_punct": "清悬空标点",
+            "punctuation": "标点归一",
+        })
+    except Exception:
+        pass
+
+    for item in history:
+        ids = item.get("rules") or []
+        item["rule_names"] = [name_map.get(i, i) for i in ids]
+
+    stat: dict[str, int] = {}
+    for item in history:
+        for name in item.get("rule_names") or []:
+            stat[name] = stat.get(name, 0) + 1
+    top_rules = sorted(
+        ({"name": k, "count": v} for k, v in stat.items()),
+        key=lambda x: -x["count"],
+    )[:10]
+
+    try:
+        disabled = list(plugin.cfg.get("出站_八股_禁用规则", []) or [])
+    except Exception:
+        disabled = []
+
+    return {
+        "think_enabled": bool(plugin.cfg.get("模块_思考过滤", True)),
+        "polish_enabled": bool(plugin.cfg.get("模块_八股清洗", True)),
+        "ai_rules_enabled": bool(plugin.cfg.get("出站_八股_清AI八股", True)),
+        "rule_total": len(rules),
+        "rules": rules,
+        "categories": categories,
+        "disabled": disabled,
+        "top_rules": top_rules,
+        "history": history,
+    }
+
+
+def _blacklist_block(plugin) -> dict:
+    """黑名单：当前生效的 QQ 号（供面板核对）。"""
+    try:
+        policy = getattr(plugin, "blacklist", None)
+        ids = sorted(policy.ids()) if policy is not None else []
+    except Exception:
+        ids = []
+    return {
+        "enabled": bool(plugin.cfg.get("模块_黑名单", True)),
+        "ids": ids,
+        "count": len(ids),
+        "block_proactive": bool(plugin.cfg.get("模块_黑名单_拦主动", True)),
+    }
+
+
+def _slang_block(plugin) -> dict:
+    """群黑话记录：各群已挖掘的高频词与命中次数。"""
+    slang = getattr(plugin, "_slang", None)
+    if slang is None:
+        return {"enabled": False, "records": []}
+    try:
+        records = slang.records(limit=100)
+    except Exception:
+        records = []
+    try:
+        analysis = slang.analysis()
+    except Exception:
+        analysis = []
+    return {
+        "enabled": bool(plugin.cfg.get("模块_黑话", True)),
+        "min_hits": int(plugin.cfg.get("黑话_最小命中", 3) or 3),
+        "records": records,
+        "analysis": analysis,
+    }
+
+
 def build_status(plugin) -> dict:
     now = time.time()
     now_dt = datetime.datetime.now()
@@ -209,6 +317,9 @@ def build_status(plugin) -> dict:
         "rhythm": _rhythm_block(plugin),
         "motive": _motive_block(plugin),
         "context": _context_block(plugin),
+        "slang": _slang_block(plugin),
+        "blacklist": _blacklist_block(plugin),
+        "outbound": _outbound_block(plugin),
         "activity": _activity_block(plugin),
         "schedule": _schedule_block(cfg),
         "conflicts": _conflicts_block(plugin),
@@ -287,6 +398,23 @@ def _conflicts_block(plugin) -> list[dict]:
                 "level": "warn",
                 "text": "smart_debounce 仍在启用，两边都会合并消息（可能重复防抖）。建议停用其一。",
             })
+        # Phase2/3 融合的 8 个旧插件：启用中与本插件对应模块同时开时提示
+        _merged = [
+            ("astrbot_plugin_global_blacklist", "黑名单", "黑名单准入"),
+            ("astrbot_plugin_recall_cancel", "撤回取消", "撤回取消"),
+            ("astrbot_plugin_poke_to_llm", "戳一戳", "戳一戳互动"),
+            ("astrbot_plugin_reread", "跟读", "群聊复读"),
+            ("astrbot_plugin_thinking_filter", "思考过滤", "思考过滤"),
+            ("astrbot_plugin_prose_polish", "八股清洗", "八股清洗"),
+            ("astrbot_plugin_slang_miner", "黑话", "群黑话挖掘"),
+            ("astrbot_plugin_weather", "天气", "天气锚点"),
+        ]
+        for _plugin, _module, _label in _merged:
+            if _star_active(_plugin) and plugin._module_on(_module):
+                out.append({
+                    "level": "warn",
+                    "text": f"{_plugin} 仍在启用，本中枢的「{_label}」也开着，可能重复触发。建议停用旧插件。",
+                })
         if (
             _star_active("astrbot_plugin_context_aware")
             and plugin._module_on("上下文")

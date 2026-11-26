@@ -81,12 +81,80 @@ class MoodState:
 
 
 class MoodStore:
-    """按 key 维护当前情绪（内存、有界、随时间衰减）。"""
+    """按 key 维护当前情绪（有界、随时间衰减、可选轻量落盘）。"""
 
-    def __init__(self, max_keys: int = 120, decay_hours: float = 3.0) -> None:
+    def __init__(
+        self, max_keys: int = 120, decay_hours: float = 3.0,
+        persist_path=None, save_debounce_sec: float = 20.0,
+    ) -> None:
         self._max = max(10, int(max_keys))
         self._decay = max(0.1, float(decay_hours))
         self._states: dict[str, MoodState] = {}
+        self._persist_path = str(persist_path) if persist_path else ""
+        self._save_debounce = max(0.0, float(save_debounce_sec))
+        self._last_save = 0.0
+        if self._persist_path:
+            self.load()
+
+    # ---- 持久化（safe_io 原子读写；失败只记 debug，不影响情绪功能）----
+    def load(self) -> None:
+        if not self._persist_path:
+            return
+        try:
+            from pathlib import Path
+            from .safe_io import sync_read_json
+
+            raw = sync_read_json(Path(self._persist_path), {})
+            if not isinstance(raw, dict):
+                return
+            if not isinstance(raw, dict):
+                return
+            for key, item in raw.items():
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    st = MoodState(
+                        name=str(item.get("name") or CALM),
+                        intensity=float(item.get("intensity") or 0),
+                        updated=float(item.get("updated") or 0),
+                        reason=str(item.get("reason") or "")[:40],
+                    )
+                    # 落盘期间已过的时间在 get() 时按衰减规则实时计算，
+                    # 这里只要强度还在有效区间就加载（不要用 _decayed，它查的是尚未填充的 _states）
+                    if st.intensity >= INTENSITY_FLOOR:
+                        self._states[str(key)] = st
+                except (TypeError, ValueError):
+                    continue
+        except Exception as e:  # noqa: BLE001
+            try:
+                from astrbot.api import logger
+                logger.debug("proactive_life | 情绪状态读取失败，按空处理: %s", e)
+            except Exception:
+                pass
+
+    def save(self, force: bool = False) -> None:
+        if not self._persist_path:
+            return
+        now = time.time()
+        if not force and now - self._last_save < self._save_debounce:
+            return
+        self._last_save = now
+        try:
+            from pathlib import Path
+            from .safe_io import sync_write_json
+
+            payload = {
+                k: {"name": v.name, "intensity": v.intensity,
+                    "updated": v.updated, "reason": v.reason}
+                for k, v in self._states.items()
+            }
+            sync_write_json(Path(self._persist_path), payload)
+        except Exception as e:  # noqa: BLE001
+            try:
+                from astrbot.api import logger
+                logger.debug("proactive_life | 情绪状态落盘失败: %s", e)
+            except Exception:
+                pass
 
     # ---- 内部：衰减 ----
     def _decayed(self, key: str, now: float) -> MoodState:
@@ -134,6 +202,7 @@ class MoodStore:
         )
         self._states[key] = st
         self._prune(now)
+        self.save()
         return st
 
     def hint(self, key: str, now: float | None = None) -> str:
@@ -149,6 +218,7 @@ class MoodStore:
 
     def clear(self, key: str) -> None:
         self._states.pop(str(key or ""), None)
+        self.save(force=True)
 
     def count(self) -> int:
         return len(self._states)

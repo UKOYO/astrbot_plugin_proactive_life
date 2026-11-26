@@ -10,6 +10,7 @@ private / group / worker 三处原本各抄一份：
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -102,13 +103,54 @@ async def run_agent(
     umo: str = "",
     tool_call_timeout: int = 120,
     max_steps: int = 15,
+    total_timeout: float | None = None,
 ) -> AgentOutcome:
     """跑一轮 MainAgent，返回最终纯文本。
 
     所有失败都折成 ok=False（不抛），调用方只需判断 ok。
+    total_timeout 是整轮硬超时（含全部 step 与工具调用）；None 表示不限，
+    由调用方自己控制。main 的调度循环外层有 300s，但面板手动触发等入口
+    没有外层保护，所以这里提供兜底。
     """
     if not AGENT_AVAILABLE:
         return AgentOutcome(False, reason="MainAgent 依赖不可用")
+    if total_timeout and total_timeout > 0:
+        try:
+            return await asyncio.wait_for(
+                _run_agent_inner(
+                    context, event, req,
+                    build_cfg=build_cfg, umo=umo,
+                    tool_call_timeout=tool_call_timeout, max_steps=max_steps,
+                ),
+                timeout=float(total_timeout),
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "proactive_life | agent 整轮超时（%.0fs，max_steps=%d），按失败处理",
+                float(total_timeout), max_steps,
+            )
+            return AgentOutcome(False, reason=f"整轮超时 {total_timeout:.0f}s")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("proactive_life | agent 执行异常: %s", e)
+            return AgentOutcome(False, reason=str(e)[:120])
+    return await _run_agent_inner(
+        context, event, req,
+        build_cfg=build_cfg, umo=umo,
+        tool_call_timeout=tool_call_timeout, max_steps=max_steps,
+    )
+
+
+async def _run_agent_inner(
+    context: Any,
+    event: Any,
+    req: Any,
+    *,
+    build_cfg: Any = None,
+    umo: str = "",
+    tool_call_timeout: int = 120,
+    max_steps: int = 15,
+) -> AgentOutcome:
+    """run_agent 的实际执行体（不含总超时包装）。"""
     try:
         if build_cfg is None:
             build_cfg = build_agent_config(

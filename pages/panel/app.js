@@ -14,6 +14,14 @@
     "角色_AstrBot人设": "选用人设",
     "角色_插件提示词模型": "提示词生成模型",
     "角色_插件专用提示词": "插件专用提示词",
+    "拟人_跨会话记忆": "跨会话记住同一个人",
+    "拟人_说话方式约束": "注入说话方式硬约束，防止低智模型退化成解说员/百科",
+    "拟人_说话方式强度": "strict=严格（防解说员）/gentle=温和（只提醒语气）",
+    "拟人_说话方式补充": "自己补充的说话要求（会加到约束末尾，200字内）",
+    "拟人_情绪落盘": "情绪状态落盘",
+    "拟人_情绪注入被动": "被动回复附带情绪",
+    "心事_被动注入": "被动回复附带心事",
+    "生活状态_总字数上限": "状态块字数上限",
     "角色_自动读取AstrBot人设": "自动读取 AstrBot 人设",
     "角色_Bot自称": "Bot 自称",
     "角色_对方称呼": "对方称呼",
@@ -28,6 +36,61 @@
     "模块_日程": "日程模块总开关",
     "模块_上下文": "上下文模块总开关",
     "模块_防抖": "防抖模块总开关",
+    "戳一戳_上下文条数": "戳/艾特时附带前面几条消息当上下文",
+    "戳一戳_上下文秒数": "只附带这么多秒内发的消息（防串到很久以前的话题）",
+    "戳一戳_后续合并": "先戳/艾特、后发消息时，把后续内容合并进同一次回复",
+    "戳一戳_纯艾特回应": "纯艾特也算戳一戳",
+    "戳一戳_个人冷却秒": "个人戳完冷却 · 秒",
+    "戳一戳_群冷却秒": "群内被戳冷却 · 秒",
+    "戳一戳_反戳": "戳回去",
+    "戳一戳_回应概率": "被戳回应概率",
+    "戳一戳_纯艾特概率": "纯艾特回应概率",
+    "跟读_阈值": "几句相同才复读",
+    "跟读_最小间隔秒": "复读间隔",
+    "跟读_概率": "复读概率",
+    "跟读_屏蔽词": "不复读的词",
+    "出站_思考标签": "思考标签名",
+    "出站_裸思考过滤": "过滤裸思考",
+    "出站_孤闭合处理": "落单结束标签",
+    "出站_未闭合处理": "没关上的标签",
+    "出站_思考标签大小写敏感": "区分大小写",
+    "出站_空回复兜底": "空回复时说啥",
+    "出站_修剪空白": "去掉首尾空格",
+    "出站_压缩空行": "合并空行",
+    "出站_八股_清AI八股": "清理 AI 八股",
+    "出站_八股_改句式": "改掉绕弯句式",
+    "出站_八股_换词": "换掉老套词",
+    "出站_八股_删八股短语": "删掉套话",
+    "出站_八股_激进删词": "删得更狠",
+    "出站_八股_水词配额": "保留几个水词",
+    "出站_八股_合并碎句": "合并短句",
+    "出站_八股_碎句阈值": "多短算短句",
+    "出站_八股_删结尾升华": "删掉结尾升华",
+    "出站_八股_保护细节块": "保护细节内容",
+    "出站_八股_保护代码表格": "保护代码表格",
+    "出站_八股_保护引号台词": "保护引号台词",
+    "出站_八股_禁用规则": "停用规则",
+    "出站_八股_演练模式": "只预览不修改",
+    "模块_天气": "天气功能",
+    "天气_城市": "你在哪个城市",
+    "黑话_自动解析": "自动解析新黑话",
+    "黑话_解析模型": "解析专用模型",
+    "模块_黑话": "群黑话",
+    "黑话_最小命中": "出现几次算黑话",
+    "黑话_最多条数": "最多带几条黑话",
+    "黑话_只注入已解析": "只注入确认过的黑话",
+    "模块_黑名单": "黑名单准入模块总开关",
+    "模块_黑名单_ID": "黑名单 QQ 号",
+    "模块_黑名单_批量文本": "批量黑名单文本",
+    "模块_黑名单_拦主动": "黑名单禁止主动私聊",
+    "模块_黑名单_记日志": "拦截时记日志",
+
+    "模块_撤回取消": "撤回取消模块总开关",
+    "模块_戳一戳": "戳一戳互动模块总开关",
+    "模块_跟读": "群聊复读模块总开关",
+    "模块_思考过滤": "出站清洗模块总开关",
+    "模块_八股清洗": "出站清洗模块总开关",
+
     "防抖_群聊启用": "群聊防抖",
     "防抖_私聊启用": "私聊防抖",
     "防抖_群聊等待秒": "群聊静默等待 · 秒",
@@ -38,6 +101,7 @@
     "防抖_情绪拆分": "情绪倾诉单独成批",
     "防抖_过滤表情包": "过滤无意义表情包",
     "防抖_锁超时秒": "会话锁超时 · 秒",
+    "防抖_推理续租秒": "模型推理续租 · 秒",
     "全局调度间隔": "调度间隔 · 分",
     "免打扰时段": "免打扰 · 小时",
     "私聊主动_启用": "私聊主动",
@@ -54,6 +118,8 @@
     "参考日程": "参考日程",
     "日程生成时间": "生成时刻 · HH:MM",
     "日程_自动生成": "每日自动生成",
+    "日程_被动注入": "被动回复也带生活状态",
+    "日程_被动注入字数": "注入日程字数上限",
     "日程_参考历史天数": "参考历史 · 天",
     "日程_参考最近条数": "参考聊天 · 条",
     "日程_生成模型": "生成模型",
@@ -84,7 +150,7 @@
     "群聊命中词_需包含称呼": "命中需带称呼",
     "群聊独立分区配置": "群专属分区",
     "场景感知_启用": "场景感知 · 防抢答",
-    "场景感知_让位contextaware": "让位原 context_aware",
+    "场景感知_让位contextaware": "让位给旧插件",
     "场景感知_对话窗口": "对话流窗口 · 条",
     "场景感知_显示对话流": "显示对话流",
     "场景感知_严格模式": "严格模式",
@@ -112,7 +178,7 @@
     "节奏_处理方式": "修剪方式",
     "节奏_每段字数": "每段字数",
     "节奏_最多几条": "最多几条",
-    "节奏_间隔秒数": "补发间隔 · 秒",
+    "节奏_间隔秒数": "正常回复补发间隔 · 秒",
     "节奏_去句末标点": "去句末标点",
     "节奏_去颜文字": "去颜文字",
     "节奏_表格代码不拆": "表格代码不拆",
@@ -121,20 +187,24 @@
     "节奏_只对群聊": "只对群聊",
     "节奏_演练模式": "演练模式",
     "模拟分段打字": "模拟分段打字",
-    "分段发送延迟": "分段延迟 · 秒",
+    "分段发送延迟": "主动私聊打字停顿 · 秒",
   };
 
   // 配置栏位归到独立分頁（对应 HTML 的 data-view / data-conf）
   const PRIVATE_KEYS = ["私聊主动_启用", "私聊追问_启用", "对谁主动", "最短间隔", "每天最多几次", "触发概率", "安静多久才找", "追问等待秒数", "追问过期秒数", "追问最多次数", "参考几条", "参考日程", "参考最近聊天"];
   const CORE_KEYS = ["全局调度间隔", "免打扰时段"];
   const WORKER_KEYS = ["后台摸鱼_启用", "摸鱼干活最短间隔", "摸鱼干活概率", "优先消费心事动机"];
-  const VOICE_KEYS = ["模拟分段打字", "分段发送延迟"];
+  const TYPING_KEYS = ["模拟分段打字", "分段发送延迟"];
   // 这些键用多行文本框编辑
   const TEXTAREA_KEYS = ["日程_提示词模板", "角色_生活背景", "角色_额外人设", "角色_插件专用提示词"];
   const MODULE_GROUP = {
     "模块_私聊": "private", "模块_群聊": "group", "模块_摸鱼": "worker",
     "模块_节奏": "rhythm", "模块_日程": "schedule", "模块_上下文": "context",
     "模块_防抖": "debounce", "模块_身份": "identity",
+    // 融合进来的模块开关，按语义归到相关分页，不再全堆总览
+    "模块_黑名单": "blacklist", "模块_撤回取消": "interact", "模块_戳一戳": "interact",
+    "模块_跟读": "group", "模块_黑话": "slang",
+    "模块_思考过滤": "outbound", "模块_八股清洗": "outbound", "模块_天气": "schedule",
   };
   const GROUP_OF = (key) => {
     if (MODULE_GROUP[key]) return MODULE_GROUP[key];
@@ -144,9 +214,16 @@
     if (key.startsWith("场景感知_") || key.startsWith("拟人_")) return "context";
     if (CORE_KEYS.includes(key)) return "core";
     if (PRIVATE_KEYS.includes(key)) return "private";
-    if (key.startsWith("群聊")) return "group";
+    if (key.startsWith("模块_黑名单")) return "blacklist";
+    if (key.startsWith("黑话_") || key === "模块_黑话") return "slang";
+    if (key.startsWith("群聊") || key.startsWith("跟读_")
+        ) return "group";
+    if (key.startsWith("戳一戳_")) return "interact";
+    if (key.startsWith("出站_")) return "outbound";
+    if (key.startsWith("场景感知_")) return "context";
+    if (key.startsWith("天气_")) return "schedule";
     if (WORKER_KEYS.includes(key) || key.startsWith("摸鱼_")) return "worker";
-    if (key.startsWith("节奏_") || VOICE_KEYS.includes(key)) return "rhythm";
+    if (key.startsWith("节奏_") || TYPING_KEYS.includes(key)) return "rhythm";
     return "core";
   };
 
@@ -165,6 +242,16 @@
     groupFold: document.getElementById("groupFold"),
     rhythm: document.getElementById("rhythm"),
     worker: document.getElementById("worker"),
+    slangList: document.getElementById("slangList"),
+    slangMeta: document.getElementById("slangMeta"),
+    slangClearAll: document.getElementById("slangClearAll"),
+    slangAnalyze: document.getElementById("slangAnalyze"),
+    slangAnalysis: document.getElementById("slangAnalysis"),
+    blacklistView: document.getElementById("blacklistView"),
+    outboundHistory: document.getElementById("outboundHistory"),
+    ruleCatalog: document.getElementById("ruleCatalog"),
+    ruleTop: document.getElementById("ruleTop"),
+    ruleMeta: document.getElementById("ruleMeta"),
     confForms: Array.from(document.querySelectorAll("form.conf")),
     toast: document.getElementById("toast"),
     footNote: document.getElementById("footNote"),
@@ -174,6 +261,9 @@
     debounceStats: document.getElementById("debounceStats"),
     identityView: document.getElementById("identityView"),
     personaExtra: document.getElementById("personaExtra"),
+    motiveInput: document.getElementById("motiveInput"),
+    motiveAddBtn: document.getElementById("motiveAddBtn"),
+    motiveList: document.getElementById("motiveList"),
     scheduleView: document.getElementById("scheduleView"),
     scheduleHint: document.getElementById("scheduleHint"),
     scheduleExtra: document.getElementById("scheduleExtra"),
@@ -460,6 +550,9 @@
     renderGroup(s.group || {});
     renderRhythm(s.rhythm || {});
     renderWorker(s.worker || {}, s.motive || {});
+  renderSlang(s.slang || {});
+  renderBlacklist(s.blacklist || {});
+  renderOutbound(s.outbound || {});
     renderContext(s.context || {});
     renderIdentity(s.identity || {});
     renderDebounce(s.debounce || {});
@@ -587,6 +680,164 @@
       '<div class="rhythm__note">处理详情为最近一条消息的结果</div>';
   }
 
+  // 高风险句式（只统计不改写）的中文标签
+  const RISK_LABELS = {
+    not_but: "不是…而是…",
+    drama_tail: "短剧金句甩尾",
+    short_parallel: "短句排比",
+    dash_heavy: "破折号泛滥",
+  };
+  function riskLine(risk) {
+    if (!risk) return "";
+    const items = Object.keys(risk).map((k) => RISK_LABELS[k] || k);
+    if (!items.length) return "";
+    return '<div class="polish__risk">仅记录（不改写）：' + esc(items.join(" · ")) + '</div>';
+  }
+
+  function renderOutbound(d) {
+    // 规则清单：按分类分组，公开每条规则在干什么
+    if (el.ruleCatalog) {
+      const cats = d.categories || [];
+      const rules = d.rules || [];
+      if (el.ruleMeta) {
+        el.ruleMeta.textContent = d.rule_total
+          ? `共 ${d.rule_total} 条规则 · ${cats.length} 类${d.ai_rules_enabled ? "" : "（AI 八股已关闭）"}`
+          : "—";
+      }
+      el.ruleCatalog.innerHTML = cats.map((c) => {
+        const items = rules.filter((r) => r.category === c.key);
+        if (!items.length) return "";
+        return '<div class="rule-cat">' +
+          '<div class="rule-cat__head"><b>' + esc(c.label) + '</b>' +
+            '<span>' + items.length + ' 条</span></div>' +
+          items.map((r) =>
+            '<div class="rule-item" data-rule="' + esc(r.id) + '">' +
+              '<span class="rule-item__name">' + esc(r.name) + '</span>' +
+              '<span class="rule-item__desc">' + esc(r.desc || "") + '</span>' +
+            '</div>'
+          ).join("") +
+        '</div>';
+      }).join("") || '<div class="motive__empty">规则清单加载中</div>';
+    }
+    // 最近命中排行
+    if (el.ruleTop) {
+      const top = d.top_rules || [];
+      el.ruleTop.innerHTML = top.length
+        ? top.map((t) =>
+            '<div class="rule-top__row"><span>' + esc(t.name) + '</span>' +
+              '<b>' + esc(String(t.count)) + ' 次</b></div>'
+          ).join("")
+        : '<div class="motive__empty">还没有命中记录，模型输出八股时会出现在这里</div>';
+    }
+
+    const box = el.outboundHistory;
+    if (!box) return;
+    const items = d.history || [];
+    if (!items.length) {
+      box.innerHTML = '<div class="motive__empty">还没有清洗记录。开启八股清洗后，模型发出八股味的句子会被记在这里。</div>';
+      return;
+    }
+    box.innerHTML = items.map((it) =>
+      '<div class="polish__row">' +
+        '<div class="polish__head"><span class="polish__time">' + esc(it.time || '') + '</span>' +
+          '<span class="polish__hits">改了 ' + esc(String(it.hits || 0)) + ' 处</span>' +
+          '<span class="polish__rules">' + esc((it.rule_names || it.rules || []).join(' · ')) + '</span></div>' +
+        '<div class="polish__before"><b>原文</b>' + esc(it.before || '') + '</div>' +
+        '<div class="polish__after"><b>改后</b>' + esc(it.after || '') + '</div>' +
+        riskLine(it.risk) +
+      '</div>'
+    ).join('');
+  }
+
+  function renderBlacklist(d) {
+    const box = el.blacklistView;
+    if (!box) return;
+    const ids = d.ids || [];
+    if (!d.enabled) {
+      box.innerHTML = '<div class="motive__empty">黑名单已关闭</div>';
+      return;
+    }
+    if (!ids.length) {
+      box.innerHTML = '<div class="motive__empty">还没有黑名单，在下方添加 QQ 号</div>';
+      return;
+    }
+    box.innerHTML = ids.map((id) =>
+      '<div class="card"><div class="card__meta"><b>QQ</b> ' + esc(id) + '</div></div>'
+    ).join('');
+  }
+
+  function renderSlang(d) {
+    const list = el.slangList, meta = el.slangMeta;
+    if (!list) return;
+    const recs = d.records || [];
+    if (meta) {
+      meta.textContent = d.enabled
+        ? `已挖掘 ${recs.length} 条 · 出现 ${d.min_hits || 3} 次以上才算黑话`
+        : "已关闭";
+    }
+    // 解析结果区
+    const box = el.slangAnalysis;
+    if (box) {
+      const an = (d.analysis || []).filter((a) => a.is_slang !== false);
+      box.innerHTML = an.length
+        ? an.map((a) =>
+            '<div class="slang__an" data-word="' + esc(a.word || '') + '">' +
+              '<b>' + esc(a.word || '') + '</b>' +
+              '<span class="slang__meaning" title="点击修改释义">' + esc(a.meaning || '（点此填写释义）') + '</span>' +
+            '</div>'
+          ).join('')
+        : '<div class="motive__empty">模型会每 30 分钟自动解析新词（可点上方「立即解析」手动触发）</div>';
+      // 点击释义 -> 就地编辑，失焦/回车保存
+      box.querySelectorAll('.slang__meaning').forEach((span) => {
+        span.addEventListener('click', () => {
+          if (span.querySelector('input')) return;
+          const row = span.closest('.slang__an');
+          const word = row && row.dataset.word;
+          const oldText = span.textContent === '（点此填写释义）' ? '' : span.textContent;
+          span.innerHTML = '<input type="text" class="slang__meaning-input" value="' + esc(oldText) + '" />';
+          const input = span.querySelector('input');
+          input.focus(); input.select();
+          const save = async () => {
+            const val = (input.value || '').trim();
+            span.textContent = val || '（点此填写释义）';
+            try {
+              const resp = await bridge.apiPost(`${API}/action`, { action: "slang_update_meaning", word, meaning: val });
+              toast((resp && resp.message) || '已保存', !resp || !resp.ok);
+            } catch (err) { toast(err.message || String(err), true); }
+          };
+          input.addEventListener('blur', save, { once: true });
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+            if (e.key === 'Escape') { span.textContent = oldText || '（点此填写释义）'; }
+          });
+        });
+      });
+    }
+    if (!recs.length) {
+      list.innerHTML = '<div class="motive__empty">还没有黑话记录，群里多聊几句就能挖到</div>';
+      return;
+    }
+    list.innerHTML = recs.map((r) =>
+      '<div class="slang__row" data-group="' + esc(r.group || '') + '">' +
+        '<span class="slang__word">' + esc(r.word || '') + '</span>' +
+        '<span class="slang__hits">' + esc(String(r.hits || 0)) + ' 次</span>' +
+        '<span class="slang__group">' + esc(r.group || '') + '</span>' +
+        '<button type="button" class="slang__del" title="清空此群">×</button>' +
+      '</div>'
+    ).join('');
+    list.querySelectorAll('.slang__del').forEach((btn) => {
+      btn.onclick = async () => {
+        const row = btn.closest('.slang__row');
+        if (!row) return;
+        try {
+          const resp = await bridge.apiPost(`${API}/action`, { action: "slang_clear", group: row.dataset.group });
+          toast((resp && resp.message) || "已清空", !resp || !resp.ok);
+          await refresh();
+        } catch (err) { toast(err.message || String(err), true); }
+      };
+    });
+  }
+
   function renderWorker(w, m) {
     const items = (m.items || [])
       .slice(-3)
@@ -605,6 +856,30 @@
       row("概率", pct(w.probability)) +
       row("心事池", `${m.count || 0} 条`) +
       items;
+    if (el.motiveList) {
+      const list = (m.items || []).map((it) =>
+        `<div class="motive__row" data-mid="${esc(it.id || "")}">` +
+          `<span class="motive__text">${esc(it.text || "")}</span>` +
+          `<span class="motive__meta">${esc(SCOPE_NAMES[it.scope] || it.scope || "—")}` +
+            `${it.private_used ? " · 已用于私聊" : ""}` +
+            `${it.age_hours != null ? ` · ${it.age_hours}h前` : ""}</span>` +
+          `<button type="button" class="motive__del" title="删除">×</button>` +
+        `</div>`
+      ).join("");
+      el.motiveList.innerHTML = list || '<div class="motive__empty">还没有心事，摸鱼沉淀或手动添加</div>';
+      el.motiveList.querySelectorAll(".motive__del").forEach((btn) => {
+        btn.onclick = async () => {
+          const rowEl = btn.closest(".motive__row");
+          const mid = rowEl && rowEl.dataset.mid;
+          if (!mid) return;
+          try {
+            const resp = await bridge.apiPost(`${API}/action`, { action: "motive_delete", id: mid });
+            toast((resp && resp.message) || "已删除", !resp || !resp.ok);
+            await refresh();
+          } catch (err) { toast(err.message || String(err), true); }
+        };
+      });
+    }
   }
 
   // 上下文/场景感知：展示实际注入的上下文统计与最近一次场景预览
@@ -679,8 +954,38 @@
   // 让 textarea 随内容自动撑高，避免出现内部滚动条
   function autoGrow(node) {
     if (!node) return;
-    node.style.height = "auto";
-    node.style.height = node.scrollHeight + "px";
+    // 用隐藏 mirror 精确量内容高度：textarea 的 scrollHeight 在某些 WebView
+    // 会被自身 rows/box 限制，量不准；mirror 用完全相同的样式但 height:auto。
+    let mirror = node.__plMirror;
+    if (!mirror) {
+      mirror = document.createElement("div");
+      mirror.setAttribute("aria-hidden", "true");
+      mirror.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;" +
+        "left:-9999px;top:0;white-space:pre-wrap;word-wrap:break-word;box-sizing:border-box;";
+      document.body.appendChild(mirror);
+      node.__plMirror = mirror;
+    }
+    const cs = getComputedStyle(node);
+    for (const prop of ["fontFamily", "fontSize", "fontWeight", "lineHeight",
+                        "letterSpacing", "paddingTop", "paddingRight", "paddingBottom",
+                        "paddingLeft", "borderTopWidth", "borderBottomWidth"]) {
+      mirror.style[prop] = cs[prop];
+    }
+    const grow = () => {
+      // 复制 textarea 实际内容宽度给 mirror，让换行位置完全一致
+      mirror.style.width = node.clientWidth + "px";
+      mirror.textContent = (node.value || "") + "\n";
+      const h = mirror.offsetHeight;
+      if (h > 0) node.style.height = h + "px";
+    };
+    grow();
+    requestAnimationFrame(() => requestAnimationFrame(grow));
+    setTimeout(grow, 50);
+    setTimeout(grow, 300);
+    if (!node.__plGrowInput) {
+      node.__plGrowInput = true;
+      node.addEventListener("input", grow);
+    }
   }
 
   // 角色身分：确认人设是否真的从 AstrBot 读到了
@@ -981,11 +1286,46 @@
     bindChips(root);
   }
 
+  // 高级项：默认折叠，避免 160+ 项把面板堆满；仍在各分页可展开细调
+  const ADVANCED_PREFIXES = [
+    // 只把真正的微调项收进折叠；模块开关和常用参数直接显示
+    "出站_孤闭合", "出站_未闭合", "出站_思考标签大小写", "出站_修剪空白", "出站_压缩空行",
+    "出站_八股_保护", "出站_八股_禁用规则", "出站_八股_演练",
+    "场景感知_严格", "场景感知_总结每", "场景感知_总结间隔",
+    "节奏_打印", "节奏_演练", "节奏_表格", "节奏_花括号",
+    "拟人_情绪衰减", "日程_参考历史", "日程_参考最近",
+    "防抖_锁超时", "防抖_群聊最长", "防抖_私聊最长",
+  ];
+  const isAdvanced = (key) => ADVANCED_PREFIXES.some((p) => key.startsWith(p));
+
+  // 功能小节：把同一分页里不同用途的设置用标题隔开，避免混在一起看花眼
+  const SECTION_OF = (key) => {
+    if (key === "模块_群聊" || key.startsWith("群聊接话") || key.startsWith("群聊插话")
+        || key.startsWith("群聊命中词") || key.startsWith("群聊自发") || key === "群聊冷场判定时间"
+        || key === "群聊独立分区配置") return "接话与插话";
+    if (key.startsWith("跟读_") || key === "模块_跟读") return "复读";
+    if (key.startsWith("黑话_") || key === "模块_黑话") return "群黑话";
+    if (key.startsWith("模块_黑名单")) return "黑名单";
+    if (key === "模块_撤回取消") return "撤回取消";
+    if (key.startsWith("戳一戳_") || key === "模块_戳一戳") return "戳一戳";
+    if (key.startsWith("出站_八股") || key === "模块_八股清洗") return "八股清洗";
+    if (key.startsWith("出站_") || key === "模块_思考过滤") return "思考过滤";
+    if (key.startsWith("场景感知_") || key === "模块_上下文") return "场景感知";
+    if (key.startsWith("拟人_")) return "拟人性格";
+    if (key.startsWith("节奏_") || key === "模块_节奏" || TYPING_KEYS.includes(key)) return "发送节奏";
+    if (key.startsWith("防抖_") || key === "模块_防抖") return "消息防抖";
+    if (key.startsWith("日程") || key === "模块_日程" || key.startsWith("天气_") || key === "模块_天气") return "日程与天气";
+    if (key.startsWith("角色_") || key === "模块_身份") return "身份";
+    if (PRIVATE_KEYS.includes(key) || key === "模块_私聊" || key === "模块_黑名单_拦主动") return "私聊";
+    if (WORKER_KEYS.includes(key) || key.startsWith("摸鱼_") || key === "模块_摸鱼") return "摸鱼";
+    return "通用";
+  };
+
   function buildConf(schema, values, options) {
     if (confBuilt) return;
     options = options || {};
     // 每个分頁各自一个 form，不共享滚动；先收集再分配
-    const buckets = { core: [], private: [], group: [], worker: [], rhythm: [], schedule: [], context: [], debounce: [], identity: [] };
+    const buckets = { core: [], private: [], group: [], slang: [], interact: [], blacklist: [], worker: [], rhythm: [], outbound: [], schedule: [], context: [], debounce: [], identity: [] };
     schema.forEach(({ key, type }) => {
         const group = GROUP_OF(key);
         const label = LABELS[key] || key;
@@ -1047,10 +1387,21 @@
         }
         // 长文本（如提示词模板）用多行
         if (TEXTAREA_KEYS.includes(key)) {
+          // 直接按内容行数设 rows：不依赖 JS 时机，WebView 里也能正确显示全文
+          const raw = String(value ?? "");
+          // 宁可框大也不裁切：按每个中文约 20 字/行的保守值估算，再留 3 行余量。
+          // 上限放宽到 120 行，足以覆盖任何正常长度的人设文本。
+          const estLines = raw.split("\n").reduce((n, line) => {
+            return n + Math.max(1, Math.ceil(line.length / 20));
+          }, 0);
+          const rows = Math.max(4, Math.min(120, estLines + 3));
+          // 展示态用 pre（无框、按内容完整展开），点击切换成 textarea 编辑
           return (
-            `<div class="field field--wide"><label for="f-${esc(key)}">${esc(label)}</label>` +
-            `<textarea id="f-${esc(key)}" class="field__text" data-key="${esc(key)}" data-type="str" ` +
-            `rows="10" placeholder="留空使用内置模板">${esc(value ?? "")}</textarea></div>`
+            `<div class="field field--wide longtext" data-key="${esc(key)}" data-type="str">` +
+            `<label>${esc(label)} <em class="longtext__edit">点击编辑</em></label>` +
+            `<pre class="longtext__view" title="点击编辑">${esc(raw) || "（留空使用内置模板）"}</pre>` +
+            `<textarea id="f-${esc(key)}" class="field__text longtext__input" data-key="${esc(key)}" data-type="str" ` +
+            `rows="${rows}" placeholder="留空使用内置模板" hidden>${esc(raw)}</textarea></div>`
           );
         }
         // 清单类（服装库、免打扰时段等）用标签式编辑：紧凑、全部可见、可增删
@@ -1071,16 +1422,44 @@
           `value="${esc(text)}" inputmode="decimal" /></div>`
         );
         })();
-        (buckets[group] || buckets.core).push(field);
+        (buckets[group] || buckets.core).push({ html: field, section: SECTION_OF(key) });
     });
     el.confForms.forEach((form) => {
       const g = form.dataset.conf;
-      form.innerHTML = (buckets[g] || []).join("") || '<div class="conf__empty">此分栏暂无配置项</div>';
+      const renderTagged = (arr) => {
+        let out = "", last = "";
+        arr.forEach((t) => {
+          if (t.section !== last) {
+            out += '<h3 class="conf__sub">' + esc(t.section) + '</h3>';
+            last = t.section;
+          }
+          out += t.html;
+        });
+        return out;
+      };
+      let html = (buckets[g] || []).length
+        ? renderTagged(buckets[g])
+        : '<div class="conf__empty">此分栏暂无配置项</div>';
+      form.innerHTML = html;
       // 多行框按内容撑高，避免清单/模板出现内部滚动条
-      form.querySelectorAll("textarea").forEach((node) => {
-        autoGrow(node);
-        node.addEventListener("input", () => autoGrow(node));
+      form.querySelectorAll("textarea").forEach(autoGrow);
+    form.querySelectorAll(".longtext").forEach((wrap) => {
+      const view = wrap.querySelector(".longtext__view");
+      const input = wrap.querySelector(".longtext__input");
+      if (!view || !input) return;
+      view.addEventListener("click", () => {
+        view.hidden = true;
+        input.hidden = false;
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+        autoGrow(input);
       });
+      input.addEventListener("blur", () => {
+        view.textContent = input.value || "（留空使用内置模板）";
+        input.hidden = true;
+        view.hidden = false;
+      });
+    });
       form.querySelectorAll("[data-list-root]").forEach(bindChips);
     });
     // 上下文分页的状态说明
@@ -1123,7 +1502,13 @@
           }
         } else {
           node.value = String(actual ?? "");
-          if (node.tagName === "TEXTAREA" && typeof autoGrow === "function") autoGrow(node);
+          if (node.tagName === "TEXTAREA") {
+            if (typeof autoGrow === "function") autoGrow(node);
+            // 同步展示态 pre（长文本字段）
+            const wrap = node.closest(".longtext");
+            const view = wrap && wrap.querySelector(".longtext__view");
+            if (view) view.textContent = node.value || "（留空使用内置模板）";
+          }
         }
       });
       // 下拉选项也刷新（人设列表/模型列表可能变化）
@@ -1313,7 +1698,7 @@
 
   // 分区 tab：每个分组是独立分頁，互不共享滚动
   const TAB_KEY = "pl_panel_tab";
-  const TABS = ["overview", "private", "group", "worker", "rhythm", "schedule", "debounce", "identity", "context"];
+  const TABS = ["overview", "private", "group", "slang", "interact", "worker", "rhythm", "outbound", "schedule", "debounce", "identity", "context", "blacklist"];
 
   function setTab(name) {
     const tab = TABS.includes(name) ? name : "overview";
@@ -1342,6 +1727,7 @@
     } catch (err) {}
     setTab(saved);
     document.querySelectorAll("#tabs li").forEach((li) => {
+      if (!li.dataset.tab) return; // 分组标题不可点击
       li.addEventListener("click", () => setTab(li.dataset.tab));
     });
   }
@@ -1388,6 +1774,42 @@
       if (btn.dataset.act) btn.addEventListener("click", () => runAction(btn.dataset.act));
     });
     if (el.scheduleSave) el.scheduleSave.addEventListener("click", saveSchedule);
+    if (el.slangAnalyze) el.slangAnalyze.addEventListener("click", async () => {
+      toast("解析中，模型可能会调用搜索/MCP…", false);
+      try {
+        const resp = await bridge.apiPost(`${API}/action`, { action: "slang_analyze" });
+        toast((resp && resp.message) || "已解析", !resp || !resp.ok);
+        await refresh();
+      } catch (err) { toast(err.message || String(err), true); }
+    });
+    if (el.slangClearAll) el.slangClearAll.addEventListener("click", async () => {
+      try {
+        const resp = await bridge.apiPost(`${API}/action`, { action: "slang_clear" });
+        toast((resp && resp.message) || "已清空", !resp || !resp.ok);
+        await refresh();
+      } catch (err) { toast(err.message || String(err), true); }
+    });
+    document.querySelectorAll("[data-preset]").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          const resp = await bridge.apiPost(`${API}/action`, { action: "preset_apply", name: btn.dataset.preset });
+          toast((resp && resp.message) || "已应用", !resp || !resp.ok);
+          await refresh();
+          await syncConfigFields();
+          if (el.presetNote) el.presetNote.textContent = "已应用：" + (btn.textContent || "").trim();
+        } catch (err) { toast(err.message || String(err), true); }
+      };
+    });
+    if (el.motiveAddBtn) el.motiveAddBtn.addEventListener("click", async () => {
+      const text = (el.motiveInput && el.motiveInput.value || "").trim();
+      if (!text) { toast("请先填写心事内容", true); return; }
+      try {
+        const resp = await bridge.apiPost(`${API}/action`, { action: "motive_add", text });
+        toast((resp && resp.message) || "已添加", !resp || !resp.ok);
+        if (resp && resp.ok && el.motiveInput) el.motiveInput.value = "";
+        await refresh();
+      } catch (err) { toast(err.message || String(err), true); }
+    });
     [el.scheduleOutfit, el.scheduleText].forEach((node) => {
       if (node) node.addEventListener("input", () => autoGrow(node));
     });

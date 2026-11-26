@@ -55,6 +55,7 @@ class MultimodalMessageItem:
     reply_text: Optional[str] = None
     reply_image_urls: list[str] = field(default_factory=list)
     emotional: bool = False
+    filtered_stickers: int = 0
 
 
 @dataclass
@@ -63,6 +64,8 @@ class MergedBatchPayload:
     image_urls: list[str]
     lock_token: str
     count: int = 0
+    filtered_stickers: bool = False
+    has_extra_merged_images: bool = False
 
 
 @dataclass
@@ -107,6 +110,18 @@ class TokenizedLeaseLock:
             logger.warning("proactive_life | 防抖锁兜底释放: %s", reason)
         return True
 
+    def close(self) -> None:
+        """卸载/热更时强制收尾：取消看门狗、释放锁，不走告警路径。"""
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+        self._watchdog_task = None
+        self._current_token = None
+        if self._lock.locked():
+            try:
+                self._lock.release()
+            except RuntimeError:
+                pass
+
     def _arm_watchdog(self, token: str, ttl: float, stage: str) -> None:
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
@@ -143,6 +158,44 @@ class DebouncePipeline:
         self.total_batches: int = 0
         self.absorbed: int = 0
 
+    def update_params(
+        self,
+        debounce_sec: float,
+        max_wait_sec: float,
+        max_images: int,
+        lease_ttl: float,
+        enable_emotion_split: bool,
+    ) -> None:
+        """原地更新参数，不换实例——否则正在跑 LLM 的旧管线会把租约卡到超时。"""
+        self.debounce_sec = max(0.1, float(debounce_sec))
+        self.max_wait_sec = max(self.debounce_sec, float(max_wait_sec))
+        self.max_images = max(1, int(max_images))
+        self.lease_ttl = max(3.0, float(lease_ttl))
+        self.enable_emotion_split = bool(enable_emotion_split)
+
+    def close(self) -> None:
+        """取消所有计时器、唤醒等待者、释放锁；用于卸载与重载。"""
+        bucket = self.current_bucket
+        self.current_bucket = None
+        if bucket is not None:
+            for task in (
+                getattr(bucket, "debounce_task", None),
+                getattr(bucket, "max_wait_task", None),
+            ):
+                try:
+                    if task is not None and not task.done():
+                        task.cancel()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                bucket.flush_event.set()   # 唤醒卡在 await flush_event.wait() 的协程
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self.lease_lock.close()
+        except Exception:  # noqa: BLE001
+            pass
+
     async def ingest(self, item: MultimodalMessageItem) -> Optional[MergedBatchPayload]:
         """喂入一条消息。返回 None 表示已被当前批次吸收（不要回复）。"""
         cur = self.current_bucket
@@ -170,7 +223,14 @@ class DebouncePipeline:
         self.last_batch_count = len(bucket.items)
         self.total_batches += 1
         return MergedBatchPayload(
-            prompt=prompt, image_urls=images, lock_token=token, count=len(bucket.items)
+            prompt=prompt,
+            image_urls=images,
+            lock_token=token,
+            count=len(bucket.items),
+            filtered_stickers=any(it.filtered_stickers > 0 for it in bucket.items),
+            has_extra_merged_images=any(
+                bool(it.image_urls or it.reply_image_urls) for it in bucket.items[1:]
+            ),
         )
 
     # ------------------------------------------------ 计时器
@@ -305,7 +365,11 @@ class DebounceManager:
         is_friend = "FriendMessage" in umo
         params = self._params_for(is_friend)
         old = self._pipelines.get(umo)
-        if old is not None and self._params.get(umo) == params:
+        if old is not None:
+            if self._params.get(umo) != params:
+                # 原地改参数：换新实例会让正在跑的旧管线租约卡到看门狗超时
+                old.update_params(*params)
+                self._params[umo] = params
             return old
         pipe = DebouncePipeline(*params)
         self._pipelines[umo] = pipe
@@ -327,6 +391,11 @@ class DebounceManager:
         }
 
     def clear(self) -> None:
+        for pipe in list(self._pipelines.values()):
+            try:
+                pipe.close()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("proactive_life | 防抖管线关闭失败: %s", e)
         self._pipelines.clear()
         self._params.clear()
 
@@ -334,8 +403,14 @@ class DebounceManager:
 class MessageExtractor:
     """把一条 AstrBot 事件抽成 MultimodalMessageItem（文本 + 图片 + 引用）。"""
 
-    def __init__(self, filter_stickers: bool = True) -> None:
+    def __init__(
+        self,
+        filter_stickers: bool = True,
+        *,
+        keep_sole_sticker: bool = True,
+    ) -> None:
         self.filter_stickers = filter_stickers
+        self.keep_sole_sticker = keep_sole_sticker
 
     @staticmethod
     def _raw_segments(event: Any) -> list[dict]:
@@ -392,6 +467,7 @@ class MessageExtractor:
         raw_meta = self._raw_image_meta(event)
 
         direct_images: list[str] = []
+        filtered_direct_images: list[str] = []
         reply_images: list[str] = []
         reply_text_parts: list[str] = []
         reply_sender: Optional[str] = None
@@ -409,6 +485,7 @@ class MessageExtractor:
                     continue
                 if not keep_stickers and self._is_meaningless_sticker(comp, raw_meta):
                     filtered += 1
+                    filtered_direct_images.append(src)
                     continue
                 direct_images.append(src)
             elif isinstance(comp, Reply):
@@ -437,7 +514,11 @@ class MessageExtractor:
 
         clean_text = text.replace("[图片]", "").replace("[动画表情]", "").strip()
         if not clean_text and not direct_images and not reply_text_parts and not reply_images:
-            if filtered:
+            if self.keep_sole_sticker and filtered_direct_images:
+                # 整条消息唯一内容就是表情包时保留首张图，避免模型只看到“[发了一个表情包]”而失明
+                direct_images.append(filtered_direct_images[0])
+                filtered = max(0, filtered - 1)
+            elif filtered:
                 clean_text = "[发了一个表情包]"
 
         return MultimodalMessageItem(
@@ -451,6 +532,7 @@ class MessageExtractor:
             emotional=bool(
                 enable_emotion_split and clean_text and EMOTION_PATTERN.search(clean_text)
             ),
+            filtered_stickers=filtered,
         )
 
 

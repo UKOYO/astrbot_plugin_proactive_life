@@ -11,7 +11,10 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 from .identity import Identity, from_config as identity_from_config
+from .life_inject import build_life_state_block, inject_life_state
 from .debounce import DebounceManager, MessageExtractor, attach_finalizer
+from .modules.blacklist import BlacklistPolicy, silence_event
+from .modules.recall_cancel import RecallStateManager
 from .mood import MoodStore
 from .schedule_gen import ScheduleGenerator, ScheduleStore
 from .motive_pool import MotiveManager
@@ -32,141 +35,7 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-DEFAULT_CONFIG = {
-    # 角色身分（不写死任何人的设定；人设自动读 AstrBot 自身配置）
-    "角色_AstrBot人设": "",
-    "角色_插件提示词模型": "",
-    "角色_插件专用提示词": "",
-    "角色_自动读取AstrBot人设": True,
-    "角色_Bot自称": "",
-    "角色_对方称呼": "",
-    "角色_备用称呼": [],
-    "角色_生活背景": "",
-    "角色_兴趣关键词": [],
-    "角色_额外人设": "",
-
-    # 模块级总开关：关掉后该模块完全不介入，便于和别的插件共存
-    "模块_私聊": True,
-    "模块_群聊": True,
-    "模块_摸鱼": True,
-    "模块_节奏": True,
-    "模块_日程": True,
-    "模块_上下文": True,
-    "模块_防抖": True,
-
-    "全局调度间隔": 10,
-    "免打扰时段": [2, 3, 4, 5, 6],
-    
-    # 私聊主动与追问配置
-    "私聊主动_启用": True,
-    "私聊追问_启用": True,
-    "追问等待秒数": 300,
-    "追问最多次数": 1,
-    "追问过期秒数": 1800,
-    "对谁主动": [],
-    "安静多久才找": 60,
-    "最短间隔": 180,
-    "每天最多几次": 3,
-    "触发概率": 0.55,
-    "参考日程": True,
-    "日程生成时间": "07:00",   # 每日自动生成日程的时刻，也作为业务日边界
-
-    # 日程（提示词自动生成）
-    "日程_自动生成": True,
-    "日程_参考历史天数": 3,
-    "日程_参考最近条数": 10,
-    "日程_生成模型": "",
-    "日程_穿搭风格池": [
-        "知性学院风", "街头休闲风", "温柔淑女风", "酷飒中性风", "慵懒居家风",
-        "精致约会风", "运动活力风", "日系森女风", "法式优雅风", "韩系甜美风",
-        "复古文艺风", "极简都市风", "甜酷混搭风", "民族风情风", "暗黑系风格",
-    ],
-    "日程_提示词模板": "",
-
-    # 消息防抖（多条消息合并成一批再交给模型）
-    "防抖_群聊启用": True,
-    "防抖_私聊启用": True,
-    "防抖_群聊等待秒": 1.2,
-    "防抖_群聊最长等待秒": 2.5,
-    "防抖_私聊等待秒": 0.8,
-    "防抖_私聊最长等待秒": 1.5,
-    "防抖_单次图片上限": 5,
-    "防抖_情绪拆分": True,
-    "防抖_过滤表情包": True,
-    "防抖_锁超时秒": 15.0,
-    "参考最近聊天": True,
-    "参考几条": 12,
-    "优先消费心事动机": True,
-    "模拟分段打字": True,
-    "分段发送延迟": 1.2,
-
-    # 群聊配置
-    "群聊白名单": [],
-    "群聊自发破冰_启用": True,
-    "群聊冷场判定时间": 120,
-    "群聊自发破冰概率": 0.35,
-    "群聊插话_启用": False,
-    "群聊插话_模式": "probability",
-    "群聊插话_概率": 0.05,
-    "群聊插话_判定窗口": 30.0,
-    "群聊插话_冷却时间": 45.0,
-    "群聊插话_饥饿保底条数": 30,
-    "群聊插话_保底最短间隔": 12,
-    "群聊接话_最短间隔": 8.0,
-    "群聊插话_诊断日志": True,
-    "群聊插话_闭嘴静默分钟": 15.0,
-    "群聊插话_嫌烦静默分钟": 8.0,
-    "群聊白名单_概率倍数": 2.5,
-    "群聊独立分区配置": [],
-    "群聊判定模型": "",
-    "群聊命中词_启用": True,
-    "群聊命中词_关键词": [],
-    "群聊命中词_接话概率": 0.9,
-    "群聊命中词_最短间隔秒": 20,
-    "群聊命中词_需包含称呼": False,
-    "场景感知_启用": True,
-    "场景感知_让位contextaware": True,  # 原 context_aware 启用时不重复注入 conversation_scene
-    "场景感知_对话窗口": 8,        # 注入 LLM 的最近对话流条数
-    "场景感知_显示对话流": True,    # 是否在场景提示里列出「谁→谁」
-    "场景感知_严格模式": False,     # 主动插入场景强制判为「对群里说」，不推断成在跟 Bot 说
-    "场景感知_回复特征词": [],      # Bot 刚回过后，哪些短句算「在回应 Bot」；留空用内置默认
-    "场景感知_调试推断": False,     # 推断结果写入 debug 日志
-    "场景感知_总结启用": True,      # 每几轮背景提炼约束/纠正/决定/待办，注入时一起给模型
-    "场景感知_总结每N条": 12,       # 攒多少条消息触发一次总结（最少 4）
-    "场景感知_总结间隔秒": 180,     # 两次总结的最小间隔（最少 30 秒）
-    "场景感知_总结条数": 6,         # 每次注入最多几条笔记
-    "场景感知_总结模型": "",        # 总结用模型 id，留空跟随当前会话
-
-    # 拟人说话风格（影响群聊接话的 prompt）
-    "拟人_话多程度": 50,      # 0~100：低=惜字如金，高=话多爱接
-    "拟人_沉默倾向": 45,      # 0~100：高=没话就说、少接，低=乐于回应
-    "拟人_吐槽强度": 50,      # 0~100：高=毒舌吐槽，低=温和附和
-    "拟人_成员印象": True,     # 累积群成员的说话习惯印象，让回应因人而异
-    "拟人_情绪启用": True,      # 跨轮情绪：被冷落/被回应/被喊闭嘴会改变语气
-    "拟人_情绪衰减小时": 3.0,   # 情绪多久衰减回「平静」
-    "拟人_动机多样化": True,    # 没心事时给内置开口动机（想念/无聊/报备/分享…），避免每次同一句
-
-    # 后台自主摸鱼/干活
-    "后台摸鱼_启用": True,
-    "摸鱼干活最短间隔": 240,
-    "摸鱼干活概率": 0.4,
-    "摸鱼_搜索方向": "",        # 自定义摸鱼搜索主题，多行；留空用内置默认
-    "摸鱼_搜索方向_模式": "replace",  # replace=完全替代默认；append=优先自定义并保留默认
-
-    # 真人节奏修剪（原 human_rhythm 插件并入）
-    "节奏_启用": True,
-    "节奏_处理方式": "split",
-    "节奏_每段字数": 45,
-    "节奏_最多几条": 5,
-    "节奏_间隔秒数": 0.2,
-    "节奏_去句末标点": True,
-    "节奏_去颜文字": True,
-    "节奏_表格代码不拆": True,
-    "节奏_花括号不拆": True,
-    "节奏_只对群聊": False,
-    "节奏_打印处理详情": True,
-    "节奏_演练模式": False,
-}
+from .config_defaults import DEFAULT_CONFIG
 
 
 class _LiveConfig:
@@ -243,8 +112,8 @@ class _LiveConfig:
     "astrbot_plugin_proactive_life",
     "keyou",
     "自主生活与主动中枢",
-    "1.3.5",
-    "融合私聊主动/追问、群聊破冰/插话、后台摸鱼、真人节奏、日程生成、消息防抖与上下文场景的一体化活人感中枢",
+    "1.5.0",
+    "一体化活人感中枢：贯通入站准入、主动生活、天气穿搭日程、人物情绪与群黑话感知、出站清洗与真人节奏",
 )
 class ProactiveLifePlugin(Star, RhythmMixin):
     def __init__(self, context: Context, config: dict | None = None):
@@ -266,6 +135,30 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         self._last_schedule_day: str = ""
         # 消息防抖：多条消息合并成一批再交给模型
         self.debounce = DebounceManager(self.cfg)
+        self.blacklist = BlacklistPolicy(self.cfg)
+        self.recall_state = RecallStateManager()
+        # 跨会话「人」档案：群聊/私聊共用一份，注入时按可见域裁剪防串味
+        try:
+            from .modules.person_memory import PersonMemory
+
+            self.person_memory = PersonMemory(
+                path=StarTools.get_data_dir("astrbot_plugin_proactive_life") / "person_memory.json"
+            ) if bool(self.cfg.get("拟人_跨会话记忆", True)) else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 人物档案初始化失败: %s", e)
+            self.person_memory = None
+        from .modules.interact_context import InteractContext
+        self.interact_ctx = InteractContext(
+            window=int(self.cfg.get("戳一戳_上下文条数", 6) or 6),
+            ttl=float(self.cfg.get("戳一戳_上下文秒数", 20) or 20),
+        )
+        # 主动私聊/追问目标过滤：黑名单命中则跳过。
+        # 注意：这里必须在 lambda 内部实时读配置，否则面板开关不会生效。
+        self.private_h.is_target_blocked = lambda uid: (
+            self._module_on("黑名单")
+            and bool(self.cfg.get("模块_黑名单_拦主动", True))
+            and self.blacklist.is_blacklisted_session(f"aiocqhttp:FriendMessage:{uid}")
+        )
         # 角色身分：先按配置建好，persona 文本在 initialize() 异步补齐
         self.identity = identity_from_config(self.cfg)
         for _h in (self.private_h, self.group_h, self.worker_h, self.schedule_gen):
@@ -278,7 +171,12 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             _decay = float(self.cfg.get("拟人_情绪衰减小时", 3.0) or 3.0)
         except (TypeError, ValueError):
             _decay = 3.0
-        self.mood = MoodStore(decay_hours=_decay)
+        self.mood = MoodStore(
+            decay_hours=_decay,
+            persist_path=str(
+                StarTools.get_data_dir("astrbot_plugin_proactive_life") / "mood_state.json"
+            ) if bool(self.cfg.get("拟人_情绪落盘", True)) else None,
+        )
         # 让各 handler 能把成功事件写进面板活动日志、读写情绪
         for _h in (self.private_h, self.group_h, self.worker_h):
             try:
@@ -352,6 +250,22 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             self.debounce.clear()
         except Exception:
             pass
+        # 人物档案：退出时落盘
+        try:
+            if getattr(self, "person_memory", None) is not None:
+                self.person_memory.save()
+        except Exception:
+            pass
+        # 私聊状态：把节流期间积压的写出去
+        try:
+            self.private_h.flush_state()
+        except Exception:
+            pass
+        # 情绪落盘：退出时强制保存一次，避免防抖窗口内的更新丢失
+        try:
+            self.mood.save(force=True)
+        except Exception:
+            pass
         # 取消群聊的 fire-and-forget 任务（总结/闭嘴判定），避免卸载后还在跑
         try:
             self.group_h.cancel_background_tasks()
@@ -399,9 +313,12 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         if kind == "group" and not getattr(event, "is_at_or_wake_command", False):
             return
 
-        extractor = MessageExtractor(
-            filter_stickers=bool(self.cfg.get("防抖_过滤表情包", True))
+        filter_stickers = (
+            bool(self.cfg.get("防抖_私聊过滤表情包", False))
+            if kind == "private"
+            else bool(self.cfg.get("防抖_过滤表情包", True))
         )
+        extractor = MessageExtractor(filter_stickers=filter_stickers)
         try:
             item = extractor.extract(event, enable_emotion_split=(kind == "group"))
         except Exception as e:
@@ -437,6 +354,28 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             "debounce", f"合并 {payload.count} 条消息后发车", umo
         )
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=2_000_000)
+    async def on_recall_event(self, event: AstrMessageEvent):
+        """撤回取消：OneBot 撤回通知到达时清理防抖缓冲并标记已撤回。"""
+        if self._stop_event.is_set() or not self._module_on("撤回取消"):
+            return
+        try:
+            from .modules.recall_cancel import (
+                is_recall_event, cleanup_debounce,
+            )
+
+            hit, mid, operator = is_recall_event(event)
+            if not hit:
+                return
+            umo = str(getattr(event, "unified_msg_origin", "") or "")
+            n = cleanup_debounce(self.debounce, umo)
+            await self.recall_state.mark_recalled(umo, mid, operator)
+            logger.debug(
+                "proactive_life | 撤回 %s（操作者 %s），清理防抖 %d 条", mid, operator, n
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 撤回处理异常，按未处理跳过: %s", e)
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=999999)
     async def on_group_debounce(self, event: AstrMessageEvent):
         """群聊消息防抖：艾特/唤醒时把连发的多条消息合并成一批，等封口后一次性交给模型。
@@ -444,6 +383,10 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         合并期间到达的后续消息会被吸收（不单独回复，但仍记入场景与上下文）。
         """
         if self._stop_event.is_set():
+            return
+        # 黑名单准入：最高优先级先于防抖，命中直接中止事件
+        if self._module_on("黑名单") and self.blacklist.is_blacklisted_event(event):
+            silence_event(event, self.blacklist)
             return
         if not self._debounce_on("group"):
             return
@@ -453,6 +396,9 @@ class ProactiveLifePlugin(Star, RhythmMixin):
     async def on_private_debounce(self, event: AstrMessageEvent):
         """私聊消息防抖：对方连发几条时合并理解，避免只回最后半句。"""
         if self._stop_event.is_set():
+            return
+        if self._module_on("黑名单") and self.blacklist.is_blacklisted_event(event):
+            silence_event(event, self.blacklist)
             return
         if not self._debounce_on("private"):
             return
@@ -469,10 +415,130 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             return
         pipe = self.debounce.get_if_exists(event.unified_msg_origin)
         if pipe is not None:
-            pipe.lease_lock.renew(payload.lock_token, ttl=60.0, stage="llm_inference")
+            # 推理阶段的续租 TTL 可配（默认 120s）：慢模型 + 多轮工具调用
+            # 超过 60s 时，看门狗会提前放锁，导致同一会话并发冲进 LLM。
+            try:
+                infer_ttl = float(self.cfg.get("防抖_推理续租秒", 120) or 120)
+            except (TypeError, ValueError):
+                infer_ttl = 120.0
+            pipe.lease_lock.renew(
+                payload.lock_token, ttl=max(30.0, infer_ttl), stage="llm_inference"
+            )
         req.prompt = payload.prompt
-        # 必须无条件覆盖：宿主已把表情包 URL 塞进 req.image_urls，不覆盖过滤就白做了
-        req.image_urls = list(payload.image_urls)
+        # 若未过滤表情包且没有吸收消息带来的附加图，优先复用宿主已预处理好的本地图/动图拼帧，
+        # 避免覆写回原始远程 URL 导致重复下载及残留 “not included in this request” 提示。
+        existing_images = list(getattr(req, "image_urls", None) or [])
+        can_reuse_prepared = (
+            not payload.filtered_stickers
+            and not payload.has_extra_merged_images
+            and bool(payload.image_urls)
+            and len(existing_images) == len(payload.image_urls)
+        )
+        if not can_reuse_prepared:
+            req.image_urls = list(payload.image_urls)
+
+    @filter.on_llm_request(priority=-900)
+    async def on_life_state_llm_request(self, event: AstrMessageEvent, req):
+        """被动回复链路：把「此刻的生活状态 / 今日穿搭 / 日程」挂进本次请求。
+
+        用户主动发消息走的是 AstrBot 正常回复链路，system prompt 里只有人设，
+        模型并不知道自己今天穿什么、现在在做什么。这里补上，让被动回复和主动
+        开口用的是同一套生活设定。
+
+        优先级 -900 是算过的：`persona_guard`（100）的伪造标签清洗已经跑完，
+        我们挂上去的内容不会被它剥掉；`nsfw_restorer`（-1000）的脱敏还没跑，
+        挂上去的文字同样会被它过一遍，不会成为绕过脱敏的口子。
+        """
+        if self._stop_event.is_set():  # 重载残留的旧实例 handler，直接空转
+            return
+        try:
+            # 说话方式硬约束：低智模型容易退化成解说员，放在临时块最前面
+            try:
+                from .life_inject import inject_temp_part
+                from .modules.speech_style import MARKER as SPEECH_MARKER, speech_style_block
+
+                # 取当前会话真实模型名，用于追加一句针对性避坑
+                model_name = ""
+                try:
+                    from .common import get_chat_provider
+
+                    umo = str(getattr(event, "unified_msg_origin", "") or "")
+                    prov = get_chat_provider(self.context, umo or None)
+                    if prov is not None:
+                        model_name = str(prov.get_model() or "")
+                except Exception:  # noqa: BLE001
+                    pass
+
+                style = speech_style_block(self.cfg, model_name)
+                if style:
+                    inject_temp_part(req, style, SPEECH_MARKER)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("proactive_life | 说话方式注入失败: %s", e)
+            # 情绪 / 心事与日程共用同一份临时注入块（priority=-900、mark_as_temp）
+            # 情绪 key 必须和写入端一致：
+            #   私聊写入用 uid（private_handler.record_user_message）
+            #   群聊写入用 group_id / umo
+            session_key = ""
+            try:
+                umo = str(getattr(event, "unified_msg_origin", "") or "")
+                if event.is_private_chat():
+                    session_key = str(event.get_sender_id() or umo)
+                else:
+                    session_key = str(event.get_group_id() or umo)
+            except Exception:  # noqa: BLE001 - 事件缺字段时仅跳过情绪，不影响日程注入
+                pass
+            motive_hint = ""
+            if bool(self.cfg.get("心事_被动注入", True)):
+                try:
+                    # 用带缓存的只读方法，避免每次被动回复都读盘
+                    motive_hint = self.motive_mgr.peek_latest_unused()
+                except Exception:  # noqa: BLE001
+                    pass
+            # 群黑话：与心事共用同一临时块，受总字数上限约束
+            _sync_cfg = getattr(self, "_sync_runtime_state", None)
+            if callable(_sync_cfg):
+                _sync_cfg()
+            try:
+                _on_module = getattr(self, "_module_on", None)
+                _black_on = callable(_on_module) and _on_module("黑话")
+                _gid = str(getattr(event, "get_group_id", lambda: "")() or "")
+                if _black_on and _gid:
+                    slang = getattr(self, "_slang", None)
+                    if slang is None:
+                        from .modules.slang import SlangMiner
+                        slang = SlangMiner(int(self.cfg.get("黑话_最小命中", 3) or 3))
+                        self._slang = slang
+                    hint = slang.hint(str(event.get_group_id()), self.cfg)
+                    if hint:
+                        motive_hint = (motive_hint + "\n" + hint).strip()
+            except Exception:  # noqa: BLE001
+                pass
+            # 跨会话人物档案：群聊只带公开字段，私聊才带温度/欠着的事
+            person_block = ""
+            try:
+                _pm = getattr(self, "person_memory", None)
+                if _pm is not None:
+                    _scope = "private" if event.is_private_chat() else "group"
+                    person_block = _pm.block(
+                        str(event.get_sender_id() or ""),
+                        scope=_scope,
+                        name=str(event.get_sender_name() or ""),
+                        current_text=str(getattr(event, "message_str", "") or ""),
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.debug("proactive_life | 人物档案注入失败: %s", e)
+
+            block = build_life_state_block(
+                self.cfg, mood=getattr(self, "mood", None),
+                motive=motive_hint, session_key=session_key,
+                person=person_block,
+            )
+            if not block:
+                return
+            if inject_life_state(req, block):
+                logger.debug("proactive_life | 已注入当前生活状态（%d 字）", len(block))
+        except Exception as e:  # noqa: BLE001 - 注入失败不能影响正常回复
+            logger.debug(f"proactive_life | 生活状态注入异常，本次跳过: {e}")
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=9000)
     async def on_private_message(self, event: AstrMessageEvent):
@@ -483,6 +549,17 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             return
         uid = str(event.get_sender_id())
         self.private_h.record_user_message(uid)
+        # 人物档案：私聊可写私密字段（温度、欠着的事）
+        try:
+            pm = getattr(self, "person_memory", None)
+            if pm is not None:
+                pm.resolve_pending(uid)
+                pm.touch(
+                    uid, str(getattr(event, "message_str", "") or ""),
+                    name=str(event.get_sender_name() or ""), scope="private",
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 私聊人物档案更新失败: %s", e)
 
     @filter.after_message_sent()
     async def on_after_message_sent(self, event: AstrMessageEvent):
@@ -521,10 +598,122 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             logger.debug(f"proactive_life | after_message_sent 记录异常: {e}")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def on_group_reread(self, event: AstrMessageEvent):
+        """群聊跟读：尾 N 条相同短消息时自然复读；闭嘴期/@ 消息绝不触发。"""
+        if self._stop_event.is_set() or not self._module_on("跟读"):
+            return
+        _sync_cfg = getattr(self, "_sync_runtime_state", None)
+        if callable(_sync_cfg):
+            _sync_cfg()
+        try:
+            if getattr(event, "is_at_or_wake_command", False):
+                return
+            gid = str(getattr(event, "get_group_id", lambda: "")() or "")
+            if not gid or self.group_h._is_muted(gid):
+                return
+            from .modules.reread import RereadState, make_fingerprint
+
+            state = getattr(self, "_reread_state", None)
+            if state is None:
+                state = RereadState(
+                    int(self.cfg.get("跟读_阈值", 2) or 2),
+                    float(self.cfg.get("跟读_最小间隔秒", 8) or 8),
+                )
+                self._reread_state = state
+            # 屏蔽词
+            text = str(getattr(event, "message_str", "") or "")
+            blocked = [str(x) for x in (self.cfg.get("跟读_屏蔽词") or []) if str(x).strip()]
+            if any(w in text for w in blocked):
+                return
+            fp = make_fingerprint(list(getattr(event, "get_messages", lambda: [])() or []))
+            if not fp:
+                return
+            async with state.lock:
+                candidate = state.observe(gid, fp)
+                if not candidate:
+                    return
+                import random
+
+                if random.random() > float(self.cfg.get("跟读_概率", 0.35) or 0.35):
+                    return
+                state.mark_handled(gid, candidate)
+            # 复用原消息文本复读，不走拟人管线（避免二次润饰）
+            from astrbot.api.message_components import Plain
+
+            yield event.chain_result([Plain(text)])
+            # 复读已成事实：截断事件，避免同一条消息又走群聊插话再回一次
+            event.stop_event()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 跟读处理异常，按未触发跳过: %s", e)
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         """群聊插话：判断是否该接话（直接接话 / 话题跟进 / 概率插话），必要时生成回复。"""
         if self._stop_event.is_set():  # 重载残留的旧实例 handler，直接空转
             return
+        if (not self._module_on("群聊") and not self._module_on("黑话")
+                and not self._module_on("戳一戳")):
+            return
+        # 人物档案（群聊只写公开字段：称呼、兴趣、最近话题）
+        try:
+            _pm = getattr(self, "person_memory", None)
+            if _pm is not None:
+                _pm.touch(
+                    str(event.get_sender_id() or ""),
+                    str(getattr(event, "message_str", "") or ""),
+                    name=str(event.get_sender_name() or ""),
+                    group=str(event.get_group_id() or ""),
+                    scope="group",
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 群聊人物档案更新失败: %s", e)
+
+        # 群黑话旁路采集（共享本次事件，不重复注册回调）
+        if self._module_on("黑话"):
+            _sync_cfg = getattr(self, "_sync_runtime_state", None)
+            if callable(_sync_cfg):
+                _sync_cfg()
+            try:
+                slang = getattr(self, "_slang", None)
+                if slang is None:
+                    from .modules.slang import SlangMiner
+                    slang = SlangMiner(int(self.cfg.get("黑话_最小命中", 3) or 3))
+                    self._slang = slang
+                slang.observe(
+                    str(event.get_group_id() or ""), str(getattr(event, "message_str", "") or "")
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug("proactive_life | 群黑话采集异常: %s", e)
+        # 戳一戳/纯艾特的上下文采集：记录本群最近消息（文字+图片）
+        ctx = getattr(self, "interact_ctx", None)
+        gid = str(event.get_group_id() or "")
+        pending_hit = None
+        if ctx and gid and self._module_on("戳一戳"):
+            try:
+                from .debounce import MessageExtractor
+
+                item = MessageExtractor(filter_stickers=False).extract(
+                    event, enable_emotion_split=False
+                )
+                ctx.observe(gid, str(event.get_sender_id() or ""),
+                            item.text or str(getattr(event, "message_str", "") or ""),
+                            list(item.image_urls or []))
+                # 情景 B：前面已戳/艾特，这条才来 → 合并发出
+                if bool(self.cfg.get("戳一戳_后续合并", True)):
+                    pending_hit = ctx.pop_pending(gid)
+                if pending_hit:
+                    items = ctx.recent(gid)
+                    from .modules.interact_context import build_prompt
+
+                    prompt, images = build_prompt(pending_hit.kind, pending_hit, items)
+                    req = event.request_llm(prompt=prompt)
+                    if images:
+                        existing = list(getattr(req, "image_urls", None) or [])
+                        req.image_urls = list(dict.fromkeys(existing + images))
+                    yield req
+                    return  # 情景 B 已由这条消息合并回复，不再走常规群聊插话
+            except Exception as e:  # noqa: BLE001
+                logger.debug("proactive_life | 互动上下文采集异常: %s", e)
         if not self._module_on("群聊"):
             return
         try:
@@ -746,33 +935,316 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         else:
             logger.warning("proactive_life | 当天日程自动生成失败，可在面板手动重试")
 
+    async def _auto_analyze_slang(self, now: datetime.datetime) -> None:
+        """自动解析新挖到的黑话：复用调度循环，30 分钟节流，只解析没解析过的词。"""
+        if not self._module_on("黑话") or not bool(self.cfg.get("黑话_自动解析", True)):
+            return
+        slang = getattr(self, "_slang", None)
+        if slang is None:
+            return
+        # 节流：30 分钟一次
+        last = float(getattr(self, "_slang_auto_at", 0) or 0)
+        if time.time() - last < 1800:
+            return
+        try:
+            records = slang.records(limit=30)
+            analyzed = {a.get("word") for a in slang.analysis()}
+            words = list(dict.fromkeys(
+                r["word"] for r in records
+                if r.get("word") and r["word"] not in analyzed
+            ))
+            if not words:
+                self._slang_auto_at = time.time()  # 没新词也记一次，避免每轮都扫
+                return
+            from .modules.slang_analyze import analyze_slang
+
+            result = await asyncio.wait_for(
+                analyze_slang(
+                    self.context, self.cfg, words[:12], event=None,
+                    umo=str((self.cfg.get("对谁主动") or [""])[0] or ""),
+                ),
+                timeout=90,
+            )
+            self._slang_auto_at = time.time()
+            if result.get("ok"):
+                n = slang.set_analysis(result["items"])
+                if n:
+                    logger.info("proactive_life | 自动解析黑话 %d 个", n)
+        except Exception as e:  # noqa: BLE001
+            self._slang_auto_at = time.time()
+            logger.debug("proactive_life | 自动解析黑话失败: %s", e)
+
     async def _macro_tick(self, now: datetime.datetime) -> dict:
         """跑一轮调度。返回各模块结果，供面板「手动跑一轮」展示原因。"""
         result = {"private": False, "group": False, "worker": False, "skipped": []}
+        try:
+            # 调度优先级与全局互斥：
+            # 1. 优先判定私聊（与最重要的人开口）
+            if self._module_on("私聊"):
+                result["private"] = await self.private_h.check_and_speak(now)
+                if result["private"]:
+                    return result
+            else:
+                result["skipped"].append("私聊")
 
-        # 调度优先级与全局互斥：
-        # 1. 优先判定私聊（与最重要的人开口）
-        if self._module_on("私聊"):
-            result["private"] = await self.private_h.check_and_speak(now)
-            if result["private"]:
-                return result
-        else:
-            result["skipped"].append("私聊")
+            # 2. 其次判定群聊冷场破冰
+            if self._module_on("群聊"):
+                result["group"] = await self.group_h.check_idle_groups()
+                if result["group"]:
+                    return result
+            else:
+                result["skipped"].append("群聊")
 
-        # 2. 其次判定群聊冷场破冰
-        if self._module_on("群聊"):
-            result["group"] = await self.group_h.check_idle_groups()
-            if result["group"]:
-                return result
-        else:
-            result["skipped"].append("群聊")
+            # 3. 若私聊群聊都没开口，且处于空闲，触发后台自主摸鱼干活
+            if self._module_on("摸鱼"):
+                result["worker"] = await self.worker_h.check_and_work(now)
+            else:
+                result["skipped"].append("摸鱼")
+            return result
+        finally:
+            # 黑话自动解析：每轮都检查（内部 30 分钟节流），不另起后台线程
+            await self._auto_analyze_slang(now)
 
-        # 3. 若私聊群聊都没开口，且处于空闲，触发后台自主摸鱼干活（逛贴吧/B站吃瓜并沉淀成果）
-        if self._module_on("摸鱼"):
-            result["worker"] = await self.worker_h.check_and_work(now)
-        else:
-            result["skipped"].append("摸鱼")
-        return result
+    def _runtime_config_sig(self) -> tuple:
+        """把各状态机的可调参数打包成签名，用于判断是否需要同步。"""
+        def num(key, default, cast=float):
+            try:
+                return cast(self.cfg.get(key, default) or default)
+            except (TypeError, ValueError):
+                return cast(default)
+
+        return (
+            num("戳一戳_上下文条数", 6, int),
+            num("戳一戳_上下文秒数", 20),
+            num("黑话_最小命中", 3, int),
+            num("跟读_阈值", 2, int),
+            num("跟读_最小间隔秒", 8),
+            num("戳一戳_个人冷却秒", 30),
+            num("戳一戳_群冷却秒", 60),
+        )
+
+    def _sync_runtime_state(self) -> None:
+        """把面板改过的参数同步到已创建的状态机（无需重载插件）。"""
+        try:
+            sig = self._runtime_config_sig()
+            if sig == getattr(self, "_runtime_sig_cache", None):
+                return
+            self._runtime_sig_cache = sig
+            (win, ttl, min_hits, re_th, re_iv, cd_p, cd_g) = sig
+            ctx = getattr(self, "interact_ctx", None)
+            if ctx is not None:
+                ctx.update(window=win, ttl=ttl)
+            slang = getattr(self, "_slang", None)
+            if slang is not None:
+                slang.update_config(min_hits=min_hits)
+            reread = getattr(self, "_reread_state", None)
+            if reread is not None:
+                reread.update_config(threshold=re_th, min_interval=re_iv)
+            cd = getattr(self, "_poke_cd", None)
+            if cd is not None:
+                cd.update_config(personal_sec=cd_p, group_sec=cd_g)
+        except Exception as e:  # noqa: BLE001 - 同步失败不该影响主流程
+            logger.debug("proactive_life | 运行态配置同步失败: %s", e)
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_poke_event(self, event: AstrMessageEvent):
+        """戳一戳 / 纯艾特：共用一套冷却与情绪逻辑，附带该用户的上下文与图片。
+
+        情景 A：用户先说话/发图（忘 @），随后补 @ 或戳 → 带前面的内容一起回。
+        情景 B：先 @ / 戳，后续发消息 → 记 pending，由 on_group_message 合并发出。
+        """
+        if self._stop_event.is_set() or not self._module_on("戳一戳"):
+            return
+        _sync_cfg = getattr(self, "_sync_runtime_state", None)
+        if callable(_sync_cfg):
+            _sync_cfg()
+        try:
+            from .modules.poke import PokeCooldown, is_poke_event
+            from .modules.interact_context import build_prompt, is_pure_at
+
+            hit, bot_id, sender, group = is_poke_event(event)
+            kind = ""
+            if hit and sender:
+                kind = "poke"
+            else:
+                # 纯艾特：消息组件全是 @Bot/@全体，没有任何文字/图片
+                if bool(self.cfg.get("戳一戳_纯艾特回应", True)):
+                    try:
+                        bot = str(event.get_self_id() or "")
+                        msgs = list(event.get_messages() or [])
+                        if is_pure_at(msgs, bot):
+                            hit = True
+                            kind = "at"
+                            sender = str(event.get_sender_id() or "")
+                            group = str(event.get_group_id() or "")
+                    except Exception:  # noqa: BLE001
+                        pass
+            if not hit or not sender:
+                return
+            # 黑名单用户直接忽略
+            if self._module_on("黑名单") and self.blacklist.is_blacklisted_event(event):
+                return
+            cooldown = getattr(self, "_poke_cd", None)
+            if cooldown is None:
+                cooldown = PokeCooldown(
+                    float(self.cfg.get("戳一戳_个人冷却秒", 30) or 30),
+                    float(self.cfg.get("戳一戳_群冷却秒", 60) or 60),
+                )
+                self._poke_cd = cooldown
+            try:
+                admin = bool(event.is_admin())
+            except Exception:  # noqa: BLE001
+                admin = False
+            if cooldown.is_cooling(sender, group, is_admin=admin):
+                return
+            cooldown.mark(sender, group)
+            if self._module_on("上下文"):
+                try:
+                    self.mood.apply(sender or group or "私聊", "replied", "被戳/艾特了一下")
+                except Exception:  # noqa: BLE001
+                    pass
+            import random
+
+            prob_key = "戳一戳_纯艾特概率" if kind == "at" else "戳一戳_回应概率"
+            if random.random() > float(self.cfg.get(prob_key, 0.7) or 0.7):
+                return
+
+            # 两条分支互斥，避免「既立刻回、又被后续消息再触发一次」的双回复：
+            #   情景 A：前面有内容 → 本次直接带上下文回复，不埋 pending
+            #   情景 B：前面没内容 → 埋 pending，等后面那条消息一起合并回复，本次不回
+            ctx = getattr(self, "interact_ctx", None)
+            items = ctx.recent(group, exclude_sender="") if (ctx and group) else []
+
+            event.set_extra("_poke_trigger", True)
+            event.set_extra("_poke_sender_id", sender)
+
+            if not items:
+                # 情景 B：没有任何上下文，等用户补正文/图片再一起回
+                if ctx and group:
+                    ctx.set_pending(group, kind, sender)
+                return
+
+            # 情景 A：带着前面的上下文现在就回
+            prompt, images = build_prompt(kind, None, items)
+            req = event.request_llm(prompt=prompt)
+            if images:
+                try:
+                    existing = list(getattr(req, "image_urls", None) or [])
+                    req.image_urls = list(dict.fromkeys(existing + images))
+                except Exception:  # noqa: BLE001
+                    pass
+            yield req
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 戳一戳/纯艾特处理异常，按未触发跳过: %s", e)
+
+    @filter.on_llm_response(priority=1000)
+    async def on_outbound_think_filter(self, event: AstrMessageEvent, resp):
+        """出站第 1 道：过滤模型误吐的思考过程（在分片发送前）。"""
+        if self._stop_event.is_set() or not self._module_on("思考过滤"):
+            return
+        try:
+            from .modules.outbound import clean_llm_response
+
+            if clean_llm_response(resp, self.cfg):
+                logger.debug("proactive_life | 已过滤回复中的误吐思考")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 思考过滤异常，按原样发送: %s", e)
+
+    @filter.on_llm_response(priority=900)
+    async def on_outbound_polish_response(self, event: AstrMessageEvent, resp):
+        """出站第 2 道（提前版）：在进 history 之前就洗掉八股。
+
+        为什么前移：`on_decorating_result` 只改发出去的气泡，AstrBot 写进
+        conversation.history 的仍是带八股的原文，模型下一轮会读到自己那段八股
+        并自我强化。这里直接在 completion_text 上清洗，历史里就是干净文本。
+
+        安全边界：
+        - 只有纯文本、且没有未完成的工具调用时才动
+        - 洗完为空则回滚原文（宁可八股也不让回复消失）
+        - 代码块/表格/引号台词由 polish 内部保护区原样保留
+        """
+        if self._stop_event.is_set() or not self._module_on("八股清洗"):
+            return
+        try:
+            # 有未完成的工具调用：这一条不是最终回复，碰了会破坏工具链
+            if getattr(resp, "tools_call_name", None):
+                return
+            text = str(getattr(resp, "completion_text", "") or "")
+            if not text.strip():
+                return
+
+            from .modules.outbound import polish_text
+
+            cleaned = polish_text(text, self.cfg, event=event, stage="polish_resp")
+            if not cleaned:
+                # 整条都是八股：保留原文，别让这条回复变空
+                logger.debug("proactive_life | 整条均为八股，保留原文")
+                return
+            if cleaned != text:
+                try:
+                    resp.completion_text = cleaned
+                except Exception:  # noqa: BLE001
+                    return
+                event.set_extra("_pl_polished", True)
+                logger.debug("proactive_life | 已在响应阶段清洗八股（%d→%d 字）", len(text), len(cleaned))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 响应阶段八股清洗异常，按原样继续: %s", e)
+
+    @filter.on_decorating_result(priority=-500)
+    async def on_outbound_polish(self, event: AstrMessageEvent):
+        """出站兜底：响应阶段没洗到的情况（非 LLM 产物等）在这里洗。
+
+        正常路径已在 on_llm_response 提前洗过（历史不落八股），
+        这里靠 _pl_polished 标记去重。确定性早于节奏修剪（-600）。
+
+        注意：AstrBot 按 -priority 排序，数值越大越先执行。
+        所以这里必须 > -600，否则会变成「先按节奏拆条、再逐条洗八股」。
+        """
+        if self._stop_event.is_set() or not self._module_on("八股清洗"):
+            return
+        # 响应阶段（on_llm_response）已经洗过就不重复洗，避免同一段文本洗两遍
+        try:
+            if event.get_extra("_pl_polished"):
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from astrbot.api.message_components import Plain
+
+            from .modules.outbound import polish_text
+
+            result = event.get_result()
+            if result is None or not getattr(result, "chain", None):
+                return
+            try:
+                if not result.is_llm_result():
+                    return
+            except AttributeError:
+                pass
+            drop: list = []
+            originals: dict = {}
+            for comp in list(result.chain):
+                if isinstance(comp, Plain) and comp.text:
+                    originals[id(comp)] = comp.text
+                    new_text = polish_text(comp.text, self.cfg, event=event)
+                    if new_text == "":
+                        drop.append(comp)      # 整段都是八股：整段丢弃
+                    elif new_text != comp.text:
+                        comp.text = new_text
+            # 兜底：整条消息都是八股时不能发出空消息（部分适配器会报错），
+            # 宁可保留原文也不要让这条回复变成空的。
+            remaining = [c for c in result.chain if c not in drop]
+            if not remaining and drop:
+                drop[0].text = originals.get(id(drop[0]), drop[0].text)
+                logger.debug("proactive_life | 整条均为八股，保留原文以免发出空消息")
+                drop = drop[1:]
+            for comp in drop:
+                try:
+                    result.chain.remove(comp)
+                except (ValueError, AttributeError):
+                    comp.text = ""
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 八股清洗异常，按原样发送: %s", e)
 
     @filter.on_decorating_result(priority=-600)
     async def reshape(self, event: AstrMessageEvent) -> None:

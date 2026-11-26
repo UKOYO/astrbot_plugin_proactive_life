@@ -18,6 +18,9 @@
     <span class="ghost ghost--4">叙事</span>
   </div>
 
+  <!-- 线稿人物：若隐若现地浮现在背景左侧 -->
+  <img class="bg-figure" src="./weixiao.svg" alt="" aria-hidden="true" />
+
   <!-- 框外磨砂玻璃：四条边带分别模糊，不依赖 clip-path(evenodd)，兼容性更好 -->
   <div class="frost" aria-hidden="true">
     <span class="frost__band frost__band--top"></span>
@@ -47,11 +50,21 @@
     <nav class="siteHeader__nav" id="tabs" aria-label="面板分区">
       <ol>
         <li data-tab="overview" class="is-selected"><span class="_dot">●</span><span class="_text text-btn">总览</span></li>
+
+        <li class="nav__group" aria-hidden="true">互动</li>
         <li data-tab="private"><span class="_dot">●</span><span class="_text text-btn">私聊</span></li>
         <li data-tab="group"><span class="_dot">●</span><span class="_text text-btn">群聊</span></li>
+        <li data-tab="interact"><span class="_dot">●</span><span class="_text text-btn">戳一戳 / 艾特</span></li>
+        <li data-tab="blacklist"><span class="_dot">●</span><span class="_text text-btn">黑名单</span></li>
+
+        <li class="nav__group" aria-hidden="true">内容</li>
+        <li data-tab="slang"><span class="_dot">●</span><span class="_text text-btn">黑话</span></li>
         <li data-tab="worker"><span class="_dot">●</span><span class="_text text-btn">摸鱼</span></li>
-        <li data-tab="rhythm"><span class="_dot">●</span><span class="_text text-btn">节奏</span></li>
         <li data-tab="schedule"><span class="_dot">●</span><span class="_text text-btn">日程</span></li>
+        <li data-tab="outbound"><span class="_dot">●</span><span class="_text text-btn">出站清洗</span></li>
+
+        <li class="nav__group" aria-hidden="true">系统</li>
+        <li data-tab="rhythm"><span class="_dot">●</span><span class="_text text-btn">节奏</span></li>
         <li data-tab="debounce"><span class="_dot">●</span><span class="_text text-btn">防抖</span></li>
         <li data-tab="identity"><span class="_dot">●</span><span class="_text text-btn">身份</span></li>
         <li data-tab="context"><span class="_dot">●</span><span class="_text text-btn">上下文</span></li>
@@ -90,6 +103,16 @@
 
       <div class="panel-view is-active" id="view-overview" data-view="overview">
         <div id="conflictBox" class="conflict"></div>
+
+        <section class="sec">
+          <h2 class="sec__head"><span>拟人档位</span><em class="hint">一键切换常用参数，高级项仍可在各分页细调</em></h2>
+          <div class="preset" id="presetBox">
+            <button type="button" class="preset__btn text-btn" data-preset="restrained">克制</button>
+            <button type="button" class="preset__btn text-btn" data-preset="balanced">均衡</button>
+            <button type="button" class="preset__btn text-btn" data-preset="active">活跃</button>
+            <span class="preset__note" id="presetNote">只改常用参数，不影响你的高级配置</span>
+          </div>
+        </section>
 
         <section class="sec">
           <h2 class="sec__head"><span>最近活动</span><em class="hint">主动/破冰/摸鱼/追问</em></h2>
@@ -149,16 +172,69 @@
           <form class="conf" data-conf="group" autocomplete="off"></form>
         </section>
       </div>
+      <div class="panel-view" id="view-slang" data-view="slang">
+        <section class="sec">
+          <h2 class="sec__head"><span>群黑话</span><em class="hint">群里常说的高频词，聊天时自然带出</em></h2>
+          <div class="slang__bar">
+            <span id="slangMeta" class="hint">—</span>
+            <span>
+              <button type="button" class="act text-btn" id="slangAnalyze">立即解析</button>
+              <button type="button" class="act text-btn" id="slangClearAll">清空记录</button>
+            </span>
+          </div>
+          <div id="slangAnalysis" class="slang-analysis"></div>
+          <div id="slangList" class="slang-list"></div>
+        </section>
+        <section class="sec">
+          <h2 class="sec__head"><span>设置</span><em class="hint">改动即时落盘</em></h2>
+          <form class="conf" data-conf="slang" autocomplete="off"></form>
+        </section>
+      </div>
+      <div class="panel-view" id="view-interact" data-view="interact">
+        <section class="sec">
+          <h2 class="sec__head"><span>互动</span><em class="hint">私聊和群聊都会触发的交互反射</em></h2>
+          <p class="lede">被戳一下会回应，撤回消息会取消还没发出的回复并清理防抖。这两项对私聊和群聊都生效。</p>
+          <form class="conf" data-conf="interact" autocomplete="off"></form>
+        </section>
+      </div>
       <div class="panel-view" id="view-worker" data-view="worker">
         <section class="sec">
           <h2 class="sec__head"><span>摸鱼与动机</span><em class="hint">改动即时落盘</em></h2>
           <form class="conf" data-conf="worker" autocomplete="off"></form>
         </section>
+        <section class="sec">
+          <h2 class="sec__head"><span>心事池</span><em class="hint">主动开口与自然提及的灵感来源</em></h2>
+          <div class="schedule__edit">
+            <input id="motiveInput" type="text" placeholder="例如：刚刷到一款独立游戏，想找人聊聊" />
+            <button type="button" class="act text-btn" id="motiveAddBtn">添加心事</button>
+          </div>
+          <div id="motiveList" class="motive-list"></div>
+        </section>
       </div>
       <div class="panel-view" id="view-rhythm" data-view="rhythm">
         <section class="sec">
           <h2 class="sec__head"><span>节奏修剪</span><em class="hint">改动即时落盘</em></h2>
+          <p class="lede">「最多几条」是硬上限：长回复也会压进这个条数，此时每段会比「每段字数」更长，内容不丢。</p>
           <form class="conf" data-conf="rhythm" autocomplete="off"></form>
+        </section>
+      </div>
+      <div class="panel-view" id="view-outbound" data-view="outbound">
+        <section class="sec">
+          <h2 class="sec__head"><span>出站清洗</span><em class="hint">模型回复发出前依次过这几道</em></h2>
+          <p class="lede">顺序固定：先过滤误吐的思考过程，再洗掉 AI 八股味，最后交给「节奏」分段发送。</p>
+          <form class="conf" data-conf="outbound" autocomplete="off"></form>
+        </section>
+        <section class="sec">
+          <h2 class="sec__head"><span>规则清单</span><em class="hint" id="ruleMeta">公开透明：清洗了哪些八股，一目了然</em></h2>
+          <div id="ruleCatalog" class="rule-catalog"></div>
+        </section>
+        <section class="sec">
+          <h2 class="sec__head"><span>最近命中</span><em class="hint">哪些八股最常出现</em></h2>
+          <div id="ruleTop" class="rule-top"></div>
+        </section>
+        <section class="sec">
+          <h2 class="sec__head"><span>清洗记录</span><em class="hint">最近实际改了哪些句子</em></h2>
+          <div id="outboundHistory" class="polish-list"></div>
         </section>
       </div>
       <div class="panel-view" id="view-schedule" data-view="schedule">
@@ -232,6 +308,17 @@
           <form class="conf" data-conf="context" autocomplete="off"></form>
           <div id="contextStats" class="context__stats"></div>
           <div id="contextInfo" class="context__info"></div>
+        </section>
+      </div>
+
+      <div class="panel-view" id="view-blacklist" data-view="blacklist">
+        <section class="sec">
+          <h2 class="sec__head"><span>黑名单</span><em class="hint">这些人不会收到主动消息，也不会触发回复</em></h2>
+          <div id="blacklistView" class="cards"></div>
+        </section>
+        <section class="sec">
+          <h2 class="sec__head"><span>设置</span><em class="hint">改动即时落盘</em></h2>
+          <form class="conf" data-conf="blacklist" autocomplete="off"></form>
         </section>
       </div>
 

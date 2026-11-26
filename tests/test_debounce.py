@@ -128,12 +128,15 @@ class TestDebounce(unittest.IsolatedAsyncioTestCase):
         # 再次释放应返回 False（不匹配当前 token）
         self.assertFalse(self.pipe.lease_lock.release(p.lock_token))
 
-    async def test_pipeline_rebuilt_on_config_change(self):
-        """配置变化后应自动重建管线，而不是沿用旧参数。"""
+    async def test_pipeline_updated_in_place_on_config_change(self):
+        """配置变化后应原地更新参数，而不是换新实例。
+
+        换实例会让正在跑 LLM 的旧管线把租约卡到看门狗超时。
+        """
         old = self.pipe
         self.cfg["防抖_群聊等待秒"] = 0.9
         new = self.mgr.pipeline("aiocqhttp:GroupMessage:1")
-        self.assertIsNot(new, old)
+        self.assertIs(new, old)
         self.assertEqual(new.debounce_sec, 0.9)
 
 

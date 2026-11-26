@@ -163,34 +163,6 @@ class SceneAnalyzer:
         return False
 
     # ---------------------------------------------------------------- 触发
-    def detect_trigger(self, event: Any, msg: SceneMessage) -> tuple[str, str]:
-        """判定这条消息为什么触发了 LLM。"""
-        sender = msg.sender_name or "群友"
-
-        # 主动工具/插件触发标记（中樞的群插话会设置这个 extra）
-        try:
-            if event.get_extra("_group_active_message_triggered"):
-                return TRIGGER_ACTIVE, "你是主动加入这个对话的，没有人在叫你"
-        except Exception:
-            pass
-
-        if msg.at_bot:
-            return TRIGGER_AT, f"{sender} @了你或在消息里叫了你，需要你回应"
-        if msg.at_all:
-            return TRIGGER_AT_ALL, f"{sender} @了全体成员（包含你），可能希望你回应"
-        if msg.reply_to_id and msg.reply_to_id == self.bot_id:
-            return TRIGGER_REPLY, f"{sender} 回复了你之前的消息"
-
-        try:
-            if event.is_private_chat():
-                return "private", f"私聊对话，{sender} 在直接和你交流"
-        except Exception:
-            pass
-
-        # 没显式叫 Bot、也没标记主动，但触发了 LLM —— 多半是主动搭话
-        return TRIGGER_ACTIVE, "你是主动加入这个对话的，没有人在叫你"
-
-    # ---------------------------------------------------------------- 对话对象
     def infer_addressee(
         self,
         msg: SceneMessage,

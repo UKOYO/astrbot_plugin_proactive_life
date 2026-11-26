@@ -266,6 +266,10 @@ class ScheduleReader:
         items.sort(key=lambda x: x[0])
         now = now or datetime.datetime.now()
         cur = now.hour * 60 + now.minute
+        # 当前时刻明显早于今日第一条日程（超过 30 分钟），说明今日日程尚未开始
+        # （典型场景：凌晨 00:00~06:00 还没到 10:30 起床），不要硬报第一条白天活动。
+        if cur + 30 < items[0][0]:
+            return ""
         result = items[0][1]
         for minute, text in items:
             if minute <= cur:

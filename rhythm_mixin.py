@@ -17,6 +17,11 @@ from .rhythm_trimmer import (
 )
 
 
+# 补发首条的最小间隔：第一条还挂在 result.chain 里等宿主发送，
+# gap 太小时它可能比第一条先到 QQ，导致气泡乱序。
+_FIRST_SEG_MIN_GAP = 0.5
+
+
 class RhythmMixin:
     """节奏修剪；由 ProactiveLifePlugin 继承。"""
 
@@ -102,8 +107,11 @@ class RhythmMixin:
         if self._rhythm_on("节奏_演练模式") or new_text == full:
             return
         result.chain[plain_idx[0]].text = new_text
-        for i in plain_idx[1:]:
-            result.chain[i].text = ""
+        for i in sorted(plain_idx[1:], reverse=True):
+            try:
+                del result.chain[i]
+            except (IndexError, TypeError):
+                pass
 
     def _rhythm_set_last(self, mode: str, full: str, hits: list[str], segments=None) -> None:
         """统一记录上次处理结果，供面板与「节奏」命令读取。"""
@@ -126,8 +134,10 @@ class RhythmMixin:
 
         async def _send_rest():
             for seg in rest:
-                if gap:
-                    await asyncio.sleep(gap)
+                # 首条保底延迟：第一条还挂在 result.chain 里等宿主发，
+                # gap 太小（如 0.2s）时它可能比第一条先到，导致气泡乱序。
+                delay = max(gap, _FIRST_SEG_MIN_GAP)
+                await asyncio.sleep(delay)
                 try:
                     await event.send(event.plain_result(seg))
                 except Exception as exc:
@@ -247,10 +257,14 @@ class RhythmMixin:
         if self._rhythm_on("节奏_演练模式"):
             return
 
-        # 第一条留在原 chain，其余异步补发
+        # 第一条留在原 chain，其余异步补发。
+        # 多余 Plain 组件直接移出 chain（留空文本会让部分适配器报错/发空气泡）。
         result.chain[plain_idx[0]].text = segments[0]
-        for i in plain_idx[1:]:
-            result.chain[i].text = ""
+        for i in sorted(plain_idx[1:], reverse=True):
+            try:
+                del result.chain[i]
+            except (IndexError, TypeError):
+                pass
 
         rest = segments[1:]
         if not rest:

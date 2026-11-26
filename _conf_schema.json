@@ -1,4 +1,314 @@
 {
+  "防抖_推理续租秒": {
+    "type": "int",
+    "description": "防抖等待模型推理时的租约续租时长（秒），慢模型/多轮工具调用建议 90-120",
+    "default": 120
+  },
+  "拟人_跨会话记忆": {
+    "type": "bool",
+    "description": "跨会话记住同一个人（群聊只带称呼/兴趣，私聊才带关系温度与欠着的事，防串味）",
+    "default": true
+  },
+  "拟人_说话方式约束": {
+    "type": "bool",
+    "description": "注入说话方式硬约束，防止低智模型退化成解说员/百科",
+    "default": true
+  },
+  "拟人_说话方式强度": {
+    "type": "string",
+    "description": "strict=严格（防解说员）/gentle=温和（只提醒语气）",
+    "default": "strict"
+  },
+  "拟人_说话方式补充": {
+    "type": "string",
+    "description": "自己补充的说话要求（会加到约束末尾，200字内）",
+    "default": ""
+  },
+  "戳一戳_纯艾特概率": {
+    "type": "float",
+    "description": "纯艾特（@Bot 不带文字）时回应的概率（0~1），与戳一戳分开",
+    "default": 0.7
+  },
+  "戳一戳_上下文条数": {
+    "type": "int",
+    "description": "戳/艾特时附带前面几条消息当上下文",
+    "default": 6
+  },
+  "戳一戳_上下文秒数": {
+    "type": "int",
+    "description": "只附带这么多秒内发的消息（防串到很久以前的话题）",
+    "default": 20
+  },
+  "戳一戳_后续合并": {
+    "type": "bool",
+    "description": "先戳/艾特、后发消息时，把后续内容合并进同一次回复",
+    "default": true
+  },
+  "戳一戳_纯艾特回应": {
+    "type": "bool",
+    "description": "纯艾特（@Bot 不带文字）也触发回应；与戳一戳共用冷却，但概率单独设置",
+    "default": true
+  },
+  "黑话_只注入已解析": {
+    "type": "bool",
+    "description": "只注入模型确认过的黑话（避免未解析的垃圾词进入提示词）",
+    "default": true
+  },
+  "黑话_自动解析": {
+    "type": "bool",
+    "description": "自动解析新挖到的黑话（复用调度循环，30分钟节流）；关闭则只能手动点",
+    "default": true
+  },
+  "黑话_解析模型": {
+    "type": "string",
+    "description": "黑话解析专用模型（留空用当前聊天模型）；解析时可调用搜索/MCP 工具",
+    "default": ""
+  },
+  "模块_天气": {
+    "type": "bool",
+    "description": "天气锚点：查询当日天气并注入日程生成与被动状态",
+    "default": true
+  },
+  "天气_城市": {
+    "type": "string",
+    "description": "天气查询城市名，留空则不查询（Open-Meteo 零 API Key）",
+    "default": ""
+  },
+  "模块_黑话": {
+    "type": "bool",
+    "description": "群黑话：从群消息挖掘高频短语并临时注入",
+    "default": true
+  },
+  "黑话_最小命中": {
+    "type": "int",
+    "description": "一个短语出现多少次才算群黑话",
+    "default": 3
+  },
+  "黑话_最多条数": {
+    "type": "int",
+    "description": "注入提示词时最多带几条群黑话",
+    "default": 4
+  },
+  "戳一戳_个人冷却秒": {
+    "type": "int",
+    "description": "个人戳完后，多少秒内不再重复回应（冷却，不是等待时间）",
+    "default": 30
+  },
+  "戳一戳_群冷却秒": {
+    "type": "int",
+    "description": "群里被戳后，多少秒内不再重复回应（冷却，不是等待时间）",
+    "default": 60
+  },
+  "戳一戳_反戳": {
+    "type": "bool",
+    "description": "被戳后反戳回去（需平台支持）",
+    "default": true
+  },
+  "戳一戳_回应概率": {
+    "type": "float",
+    "description": "被戳一下时回应的概率（0~1）",
+    "default": 0.7
+  },
+  "跟读_阈值": {
+    "type": "int",
+    "description": "连续几条相同消息才跟读",
+    "default": 2
+  },
+  "跟读_最小间隔秒": {
+    "type": "int",
+    "description": "同一群两次跟读的最小间隔",
+    "default": 8
+  },
+  "跟读_概率": {
+    "type": "float",
+    "description": "命中跟读条件后的执行概率",
+    "default": 0.35
+  },
+  "跟读_屏蔽词": {
+    "type": "list",
+    "description": "命中这些词的消息不跟读",
+    "default": []
+  },
+  "出站_思考标签": {
+    "type": "list",
+    "description": "视作思考块的标签名",
+    "default": ["think", "thinking", "reasoning", "analysis", "thought", "reflection"]
+  },
+  "出站_裸思考过滤": {
+    "type": "bool",
+    "description": "过滤模型直接吐出的裸思考段",
+    "default": true
+  },
+  "出站_孤闭合处理": {
+    "type": "string",
+    "description": "孤立闭合思考标签的处理方式",
+    "default": "remove_prefix"
+  },
+  "出站_未闭合处理": {
+    "type": "string",
+    "description": "未闭合思考标签的处理方式",
+    "default": "remove_suffix"
+  },
+  "出站_思考标签大小写敏感": {
+    "type": "bool",
+    "description": "思考标签是否区分大小写",
+    "default": false
+  },
+  "出站_空回复兜底": {
+    "type": "string",
+    "description": "过滤后为空时的兜底文本",
+    "default": "（刚才走神了，再说一遍？）"
+  },
+  "出站_修剪空白": {
+    "type": "bool",
+    "description": "清洗后修剪首尾空白",
+    "default": true
+  },
+  "出站_压缩空行": {
+    "type": "bool",
+    "description": "清洗后压缩连续空行",
+    "default": true
+  },
+  "出站_八股_清AI八股": {
+    "type": "bool",
+    "description": "清理 AI 八股：开场白套话/结构列表/结尾升华/自我指称/客服腔/职场黑话/冗余/排比",
+    "default": true
+  },
+  "出站_八股_改句式": {
+    "type": "bool",
+    "description": "八股清洗：改句式",
+    "default": true
+  },
+  "出站_八股_换词": {
+    "type": "bool",
+    "description": "八股清洗：换词",
+    "default": true
+  },
+  "出站_八股_删八股短语": {
+    "type": "bool",
+    "description": "八股清洗：删八股短语",
+    "default": true
+  },
+  "出站_八股_激进删词": {
+    "type": "bool",
+    "description": "八股清洗：激进删词",
+    "default": false
+  },
+  "出站_八股_水词配额": {
+    "type": "int",
+    "description": "八股清洗：水词保留配额",
+    "default": 1
+  },
+  "出站_八股_合并碎句": {
+    "type": "bool",
+    "description": "八股清洗：合并碎句",
+    "default": false
+  },
+  "出站_八股_碎句阈值": {
+    "type": "int",
+    "description": "八股清洗：碎句阈值",
+    "default": 8
+  },
+  "出站_八股_删结尾升华": {
+    "type": "bool",
+    "description": "八股清洗：删结尾升华",
+    "default": true
+  },
+  "出站_八股_保护细节块": {
+    "type": "bool",
+    "description": "八股清洗：保护细节块",
+    "default": true
+  },
+  "出站_八股_保护代码表格": {
+    "type": "bool",
+    "description": "八股清洗：保护代码与表格",
+    "default": true
+  },
+  "出站_八股_保护引号台词": {
+    "type": "bool",
+    "description": "八股清洗：保护引号台词",
+    "default": true
+  },
+  "出站_八股_禁用规则": {
+    "type": "list",
+    "description": "八股清洗：禁用规则 id",
+    "default": []
+  },
+  "出站_八股_演练模式": {
+    "type": "bool",
+    "description": "八股清洗：演练模式",
+    "default": false
+  },
+  "模块_黑名单_ID": {
+    "type": "list",
+    "description": "黑名单 QQ 号列表（兼容旧插件的黑名单格式）",
+    "default": []
+  },
+  "模块_黑名单_批量文本": {
+    "type": "text",
+    "description": "批量黑名单文本，支持逗号/换行/空格分隔与 # 注释",
+    "default": ""
+  },
+  "模块_黑名单_拦主动": {
+    "type": "bool",
+    "description": "黑名单用户同时不适用本插件的主动私聊与追问",
+    "default": true
+  },
+  "模块_黑名单_记日志": {
+    "type": "bool",
+    "description": "拦截时记录 INFO 日志（默认静默）",
+    "default": false
+  },
+  "模块_黑名单": {
+    "type": "bool",
+    "description": "黑名单准入：拦截黑名单用户的被动回复、防抖收集与主动私聊/追问目标",
+    "default": true
+  },
+  "模块_撤回取消": {
+    "type": "bool",
+    "description": "撤回取消：用户撤回时清理防抖缓冲与未发回复任务",
+    "default": true
+  },
+  "模块_戳一戳": {
+    "type": "bool",
+    "description": "戳一戳互动：被戳时触发轻量 LLM 回应并记入情绪",
+    "default": true
+  },
+  "模块_跟读": {
+    "type": "bool",
+    "description": "群聊跟读：在规则条件下自然复读群友短句（闭嘴期绝不触发）",
+    "default": true
+  },
+  "模块_思考过滤": {
+    "type": "bool",
+    "description": "出站清洗：过滤模型误吐的思考过程",
+    "default": true
+  },
+  "模块_八股清洗": {
+    "type": "bool",
+    "description": "出站清洗：洗除 AI 八股味（保留代码块/协议标签）",
+    "default": true
+  },
+  "拟人_情绪落盘": {
+    "type": "bool",
+    "description": "跨轮情绪状态轻量落盘（防抖写），重启后不瞬间清零；关闭则纯内存",
+    "default": true
+  },
+  "拟人_情绪注入被动": {
+    "type": "bool",
+    "description": "被动回复是否附带当前跨轮情绪提示（与生活状态同一临时块，不落盘）",
+    "default": true
+  },
+  "心事_被动注入": {
+    "type": "bool",
+    "description": "被动回复是否附带 1 条未消费的心事作为自然提及提示（只读取，不标记消费）",
+    "default": true
+  },
+  "生活状态_总字数上限": {
+    "type": "int",
+    "description": "生活状态临时块（日程+情绪+心事）的总字数硬上限，防止上下文膨胀",
+    "default": 900
+  },
   "角色_AstrBot人设": {
     "type": "string",
     "description": "选用哪一份 AstrBot 人设（可多个）。留空表示跟随 AstrBot 默认人设；面板会列出全部人设供下拉选择",
@@ -145,6 +455,16 @@
     "description": "到了日程生成时间，自动用提示词生成当天穿搭与日程。关掉就只能手动生成",
     "default": true
   },
+  "日程_被动注入": {
+    "type": "bool",
+    "description": "用户主动发消息时，也把当前生活状态（此刻在做 / 今日穿搭 / 日程）挂进回复请求，让被动回复和主动开口共用同一套生活设定。关掉后只有主动开口会带日程",
+    "default": true
+  },
+  "日程_被动注入字数": {
+    "type": "int",
+    "description": "被动注入时日程正文最多带多少字（60-2000），太长会挤占上下文预算",
+    "default": 300
+  },
   "日程_参考历史天数": {
     "type": "int",
     "description": "生成时参考过去几天日程，避免连续重复；同时用于让穿搭风格尽量不重样。填 0 关闭",
@@ -196,7 +516,7 @@
   },
   "分段发送延迟": {
     "type": "float",
-    "description": "分段发送气泡之间的拟真打字延迟（秒）",
+    "description": "主动私聊开口时的拟真打字停顿（秒）；与「节奏_间隔秒数」不同，那个管正常回复的补发",
     "default": 1.2
   },
   "群聊自发破冰_启用": {
@@ -553,7 +873,7 @@
   },
   "节奏_间隔秒数": {
     "type": "float",
-    "description": "【真人节奏】分段补发之间的停顿秒数（0=连发）",
+    "description": "正常回复拆条补发时的停顿秒数（0=连发）；主动私聊用「分段发送延迟」",
     "default": 0.2
   },
   "节奏_去句末标点": {

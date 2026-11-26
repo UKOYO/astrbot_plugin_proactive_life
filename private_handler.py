@@ -6,6 +6,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# 私聊状态落盘节流：高频私聊时不必每条消息都写盘
+_STATE_SAVE_MIN_INTERVAL = 5.0
+
 
 from astrbot.api import logger
 from astrbot.core.cron.events import CronMessageEvent
@@ -226,7 +229,20 @@ class PrivateProactiveHandler(HandlerContextMixin):
         for k in ("last_user_msg", "last_active", "daily", "pending_inquiries"):
             self.state.setdefault(k, {})
 
-    def _save_state(self, raise_on_error: bool = False):
+    def _save_state(self, raise_on_error: bool = False, force: bool = False):
+        """落盘私聊状态。
+
+        内存先更新，写盘按最小间隔节流（高频私聊时避免每条消息都读盘写盘）；
+        force=True 用于退出/关键路径，立即落盘。
+        """
+        now = time.time()
+        if not force:
+            last = float(getattr(self, "_last_save_at", 0) or 0)
+            if now - last < _STATE_SAVE_MIN_INTERVAL:
+                self._state_dirty = True
+                return
+        self._last_save_at = now
+        self._state_dirty = False
         # 原子写由 safe_io 统一处理，避免半截 JSON 导致状态清零
         from .safe_io import sync_write_json
 
@@ -236,6 +252,11 @@ class PrivateProactiveHandler(HandlerContextMixin):
         )
         if not ok and raise_on_error:
             raise OSError(f"写入 {self.state_file} 失败")
+
+    def flush_state(self) -> None:
+        """把节流期间积压的状态写出去（退出/重载时调用）。"""
+        if getattr(self, "_state_dirty", False):
+            self._save_state(force=True)
 
     def record_user_message(self, uid: str):
         uid_str = str(uid)
@@ -346,15 +367,23 @@ class PrivateProactiveHandler(HandlerContextMixin):
             build_cfg = build_agent_config(self.context, umo, tool_call_timeout=120)
             req = make_request(prompt_text)
             await attach_history(self.context, req, umo)
-            outcome = await run_agent(self.context, ev, req, build_cfg=build_cfg, max_steps=15)
+            outcome = await run_agent(
+                self.context, ev, req,
+                build_cfg=build_cfg, max_steps=15, total_timeout=240,
+            )
             if not outcome.ok:
                 logger.debug("proactive_life | 私聊主动未得到有效回复：%s", outcome.reason)
                 return False
             text = outcome.text
 
-            # 分段打字
+            # 分段打字：私聊主动用较慢的拟真节奏（旧键 1.2s）
+            # 正常回复走「节奏_间隔秒数」(0.2s)，两条链路节奏不同是有意为之：
+            # 主动开口更像"想了一下才发"，正常回复可以快。
             simulate_typing = bool(self.cfg.get("模拟分段打字", True))
-            delay = float(self.cfg.get("分段发送延迟", 1.2))
+            try:
+                delay = float(self.cfg.get("分段发送延迟", 1.2))
+            except (TypeError, ValueError):
+                delay = 1.2
 
             if simulate_typing:
                 # 与面板「节奏」配置保持一致，不再用写死的 26/4
@@ -408,7 +437,13 @@ class PrivateProactiveHandler(HandlerContextMixin):
         now_ts = time.time()
         targets = [str(x).strip() for x in (self.cfg.get("对谁主动") or []) if str(x).strip()]
 
+        blocked = getattr(self, "is_target_blocked", None)
+
         for uid in targets:
+            # 黑名单校验：和主动开口保持同一套准入
+            if callable(blocked) and blocked(uid):
+                continue
+
             inquiry = self.state.get("pending_inquiries", {}).get(uid)
             if not inquiry:
                 continue
@@ -429,13 +464,18 @@ class PrivateProactiveHandler(HandlerContextMixin):
                 self._save_state()
                 continue
 
-            # 还没到追问等待时间
-            if elapsed < wait_sec:
-                continue
-
             # 追问次数已达上限
             nudged_count = int(inquiry.get("nudged_count", 0))
             if nudged_count >= max_nudges:
+                continue
+
+            # 已追问过：以「上次追问时间」为基准算冷却，否则第二次会立刻连发
+            if nudged_count > 0:
+                last_nudged_at = float(inquiry.get("last_nudged_at", 0) or 0)
+                if now_ts - last_nudged_at < wait_sec:
+                    continue
+            elif elapsed < wait_sec:
+                # 首次追问：从提问时刻开始等
                 continue
 
             # 执行追问
@@ -484,7 +524,11 @@ class PrivateProactiveHandler(HandlerContextMixin):
             return False
 
         targets = [str(x).strip() for x in (self.cfg.get("对谁主动") or []) if str(x).strip()]
+        blocked = getattr(self, "is_target_blocked", None)
         for uid in targets:
+            # 主链："uid" 已是纯 QQ 号；算法与 BlacklistPolicy.is_blacklisted_session 等价
+            if callable(blocked) and blocked(uid):
+                continue
             spoken = await self._check_single_user(uid, now)
             if spoken:
                 return True
@@ -538,6 +582,13 @@ class PrivateProactiveHandler(HandlerContextMixin):
                 f"你刚刚或手头正碰巧琢磨这件事：「{motive_text}」。\n"
                 f"你可以随口顺带吐槽一句；如果觉得现在聊这个太突兀或像新闻早报，也可以直接无视它，聊聊你现在的体感（如刚睡醒发呆、琢磨吃什么、天气、游戏）。"
             )
+            # 心事分支以前把日程整段丢了：模型只知道心事，不知道自己此刻在做什么、
+            # 今天穿什么，一开口就容易脱离生活变成新闻播报。日程作为背景一起给，
+            # 并写明「不必复述」，免得模型把日程当成要念的稿子。
+            if schedule:
+                motive_instruction += (
+                    f"\n\n【你的日程与作息状态（背景参考，不必复述）】\n{schedule[:400]}"
+                )
         else:
             reason = []
             if schedule:

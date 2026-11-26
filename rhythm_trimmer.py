@@ -242,11 +242,8 @@ def split_message(text: str, target: int = 22, max_segments: int = 5,
     if len(segments) > max_segments:
         # 短回复被拆得太碎 -> 压回上限，别把一句话撕成渣
         # 长文是干活用的 -> 不压成巨型气泡，按正常长度发，只留一个防刷屏的硬顶
-        if total <= max_segments * target:
-            segments = _repack(segments, max_segments)
-        else:
-            hard = max(max_segments, LONG_TEXT_HARD_CAP)
-            if len(segments) > hard:
-                segments = _repack(segments, hard)
+        # 「最多几条」是真上限：长文也压进上限，不再放宽到硬顶，
+        # 保证面板上写几条就最多发几条（内容一字不丢，只是每段变长）。
+        segments = _repack(segments, max_segments)
 
     return [s.strip() for s in segments if s.strip()]

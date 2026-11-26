@@ -17,6 +17,15 @@ from .agent_runner import (
 # 摸鱼 agent 用來虛构會話的系統標識（不是任何人的 QQ 號，也不依賴「對誰主動」配置）
 _WORKER_VIRTUAL_UID = "system_worker"
 
+# 摸鱼是无人值守后台任务：这些能力绝不放行（含 MCP 工具）
+_DANGEROUS_TOOL_KW = (
+    "shell", "exec", "command", "cmd", "terminal", "bash", "powershell",
+    "write", "delete", "remove", "rmdir", "unlink", "move", "rename",
+    "file", "filesystem", "fs_", "upload", "download", "save",
+    "browser", "playwright", "selenium", "puppeteer", "screenshot",
+    "sql", "database", "http_post", "webhook", "eval",
+)
+
 # 默认探索方向（用户没自定义时使用）；中性通用，不绑定任何人的兴趣或特定工具
 _DEFAULT_EXPLORE_INTENT = """1. **近期热点与新闻**：用可用的联网搜索查查今天/本周的新鲜事、行业动态或大家正在讨论的话题；
 2. **实用资讯**：查查天气、节日、生活小知识或值得留意的信息；
@@ -66,6 +75,18 @@ class AutonomousWorkerHandler(HandlerContextMixin):
             return f"【优先：按主人指定的方向查】\n{custom}\n\n【也别忘了偶尔看看】\n{_DEFAULT_EXPLORE_INTENT}"
         return f"【按主人指定的方向查，别跑题】\n{custom}"
 
+    def _mood_target_keys(self) -> list[str]:
+        """摸鱼情绪要落到的真实会话键：优先配置里的主动对象，其次当前群。"""
+        keys: list[str] = []
+        try:
+            for uid in (self.cfg.get("对谁主动") or []):
+                uid = str(uid).strip()
+                if uid:
+                    keys.append(uid)
+        except Exception:  # noqa: BLE001
+            pass
+        return keys
+
     def _build_worker_toolset(self):
         """给摸鱼 agent 明确装配搜索类工具 + MCP 工具 + 本插件的热点工具。
 
@@ -81,11 +102,19 @@ class AutonomousWorkerHandler(HandlerContextMixin):
                 "get_contents", "bangumi", "anime", "moegirl", "qzone", "feeds",
             )
             for tool in full.tools:
+                name = str(getattr(tool, "name", "") or "").lower()
                 if isinstance(tool, MCPTool):
-                    # MCP 工具全部放行（用户配置的 MCP 搜索都能用）
+                    # MCP 不能全量放行：用户可能配了本地文件/终端/浏览器自动化类 MCP，
+                    # 后台摸鱼是无人值守的，必须挡掉高危能力。
+                    if any(k in name for k in _DANGEROUS_TOOL_KW):
+                        logger.info(
+                            "proactive_life | 摸鱼跳过高危 MCP 工具: %s", name[:40]
+                        )
+                        continue
                     tools.add_tool(tool)
                     continue
-                name = str(getattr(tool, "name", "") or "").lower()
+                if any(k in name for k in _DANGEROUS_TOOL_KW):
+                    continue
                 if any(k in name for k in search_kw):
                     tools.add_tool(tool)
         except Exception as e:
@@ -192,13 +221,16 @@ class AutonomousWorkerHandler(HandlerContextMixin):
 
             # 放开工具步数与超时，允许自主链式调用
             build_cfg = build_agent_config(
-                self.context, session.session_id, tool_call_timeout=150
+                self.context, str(session), tool_call_timeout=150
             )
             # 明确装配搜索/MCP 工具，不依赖 persona 勾选
             ts = self._build_worker_toolset()
             func_tool = ts if (ts is not None and not ts.empty()) else None
             req = make_request(prompt, func_tool=func_tool)
-            outcome = await run_agent(self.context, ev, req, build_cfg=build_cfg, max_steps=20)
+            outcome = await run_agent(
+                self.context, ev, req,
+                build_cfg=build_cfg, max_steps=20, total_timeout=300,
+            )
             if not outcome.ok:
                 logger.debug("proactive_life | 摸鱼未得到有效结果：%s", outcome.reason)
                 return False
@@ -218,11 +250,14 @@ class AutonomousWorkerHandler(HandlerContextMixin):
                     self.motive_mgr.add_motive(clean, source="autonomous_worker", scope=m_scope)
                     logger.info("proactive_life | 自主探索成果已沉淀进动机池 (%s): %s", m_scope, clean[:50])
                     self._log_activity("worker", f"摸鱼沉淀（{m_scope}）：{clean[:24]}")
-                    # 摸到有意思的东西，情绪会兴奋一点（记在私聊对象上，开口时体现）
-                    self._mood_apply(_WORKER_VIRTUAL_UID, "explored", "摸鱼有收获")
+                    # 摸到有意思的东西，情绪会兴奋一点。
+                    # 注意：不能写 "system_worker"——那个键没有任何读取方，等于白写。
+                    for key in self._mood_target_keys():
+                        self._mood_apply(key, "explored", "摸鱼有收获")
+                        break
 
-            self.last_work_time = time.time()
-            return True
+                    self.last_work_time = time.time()
+                    return True
         except Exception as e:
             logger.warning("proactive_life | 自主探索执行异常: %s", e)
             return False

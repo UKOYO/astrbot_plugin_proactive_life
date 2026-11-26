@@ -40,6 +40,9 @@ from .agent_runner import AGENT_AVAILABLE  # noqa: E402
 
 _MAIN_AGENT_OK = _BREAK_IMPORT_OK and AGENT_AVAILABLE
 
+# 模型插话判定（只回 YES/NO）的硬超时；中转接口卡死时不能拖住整条被动链路
+_JUDGE_TIMEOUT_SEC = 15.0
+
 class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixin):
     def __init__(self, context, cfg: dict, motive_mgr):
         self.context = context
@@ -792,12 +795,16 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
         raw_msg = (event.message_str or "").strip()
         now = time.time()
 
-        # 0. 命中词唤醒：这是「被点名」，不该被插话开关或 @ 过滤挡掉
+        # 0. 命中词唤醒：这是「被点名」，不该被插话开关挡掉
         kw_hit = self._keyword_wakeup(origin, raw_msg, now)
         if not kw_hit and not bool(self.cfg.get("群聊插话_启用", False)):
             return
 
-        # 命中词唤醒时放宽前置过滤：允许 @Bot/唤醒词消息，但仍挡链接与静默
+        # @Bot / 唤醒词的消息已由框架原生链路回复一次，这里必须让路，否则双回复
+        if getattr(event, "is_at_or_wake_command", False):
+            return
+
+        # 命中词唤醒时放宽前置过滤：仍挡链接与静默
         msg_str = (
             self._keyword_filter(event, origin) if kw_hit
             else self._passive_filter(event, origin)
@@ -869,7 +876,11 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
                 f"作为真实群友{self._bot_name()}，你现在想不想在群里顺口搭一句话？"
                 f"输出 YES 或 NO。"
             )
-            resp = await prov.text_chat(prompt=prompt, system_prompt="你是判定器，只输出 YES 或 NO")
+            # 中转接口偶发卡死，加硬超时，避免整条被动链路被挂住
+            resp = await asyncio.wait_for(
+                prov.text_chat(prompt=prompt, system_prompt="你是判定器，只输出 YES 或 NO"),
+                timeout=_JUDGE_TIMEOUT_SEC,
+            )
             txt = (resp.completion_text or "").strip().upper()
             return ("YES" in txt and "NO" not in txt)
         except Exception as e:
@@ -938,19 +949,24 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
             motive_content = motive.get("content", "")
             logger.info("proactive_life | 命中群破冰 (群:%s, 概率:%.2f, 冷场:%d分) -> %s", gid, icebreak_prob, int(silent_min), motive_content[:30])
 
-            success = await self._post_idle_topic(origin, gid, motive_content)
-            if success:
+            reply_text = await self._post_idle_topic(origin, gid, motive_content)
+            if reply_text:
                 self._active_stamp[origin] = now_ts
                 self._last_spoke_stamp[origin] = now_ts
-                self.record_bot_group_message(origin, motive_content)
+                # 记的是真正发出去的文本（模型润色后的），不是心事原文
+                self.record_bot_group_message(origin, reply_text)
                 self.motive_mgr.mark_group_used(motive["id"], gid)
                 logger.info("proactive_life | 群聊冷场破冰成功 -> %s", origin)
-                self._log_activity("icebreak", f"冷场破冰：{motive_content[:24]}", origin)
+                self._log_activity("icebreak", f"冷场破冰：{reply_text[:24]}", origin)
                 return True
         return False
 
-    async def _post_idle_topic(self, origin: str, gid: str, topic_content: str) -> bool:
-        """调用 MainAgent 带着心事话题在群里冒泡破冰（适配 AstrBot v4.29 新版 build_main_agent）"""
+    async def _post_idle_topic(self, origin: str, gid: str, topic_content: str) -> str:
+        """调用 MainAgent 带着心事话题在群里冒泡破冰。
+
+        返回实际发出去的文本（失败返回空串）；调用方用它记上下文，
+        不能用心事原文——那和群里真实出现的句子对不上。
+        """
         try:
             try:
                 session = MessageSession.from_str(origin)
@@ -981,10 +997,13 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
             build_cfg = build_agent_config(self.context, origin, tool_call_timeout=120)
             req = make_request(prompt)
             await attach_history(self.context, req, origin, create_if_missing=True)
-            outcome = await run_agent(self.context, ev, req, build_cfg=build_cfg, max_steps=15)
+            outcome = await run_agent(
+                self.context, ev, req,
+                build_cfg=build_cfg, max_steps=15, total_timeout=240,
+            )
             if not outcome.ok:
                 logger.debug("proactive_life | 群破冰未得到有效回复：%s", outcome.reason)
-                return False
+                return ""
             reply_text = outcome.text
 
             reply_text = reply_text.strip().rstrip("。！～~!.")
@@ -998,7 +1017,7 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
             except Exception as e_hist:
                 logger.warning("proactive_life | 写入群会话历史失败: %s", e_hist)
 
-            return True
+            return reply_text
         except Exception as e:
             logger.error("proactive_life | 群聊破冰发送异常: %s\n%s", e, traceback.format_exc())
-            return False
+            return ""
