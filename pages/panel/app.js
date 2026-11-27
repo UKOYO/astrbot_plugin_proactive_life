@@ -375,21 +375,84 @@
     });
   }
 
-  // ------------------------------------------------------------ 主题开关
-  function initThemeSwitch() {
+  // ------------------------------------------------------------ 偏好本地持久化（后端文件 + localStorage 双兜底）
+  const THEME_KEY = "pl_panel_theme";
+  const MONO_KEY = "pl_panel_mono";
+  const userTouchedPrefs = new Set();
+  let pendingPrefPatch = {};
+  let prefSaveTimer = null;
+
+  function queueRemotePrefs(patch) {
+    if (!patch || typeof patch !== "object") return;
+    Object.assign(pendingPrefPatch, patch);
+    if (!bridge) return;
+    if (prefSaveTimer) window.clearTimeout(prefSaveTimer);
+    prefSaveTimer = window.setTimeout(async () => {
+      const body = pendingPrefPatch;
+      pendingPrefPatch = {};
+      prefSaveTimer = null;
+      if (!bridge || !Object.keys(body).length) return;
+      try {
+        await bridge.apiPost(`${API}/prefs`, body);
+      } catch (err) {
+        /* 兼容尚未重载的新接口 404，静默忽略 */
+      }
+    }, 120);
+  }
+
+  function applyThemeState(theme, mono, persist = true) {
     const root = document.documentElement;
     const buttons = document.querySelectorAll(".theme-btn");
-    function apply(mode) {
+    if (theme === "light" || theme === "dark") {
+      root.dataset.theme = theme;
+      buttons.forEach((b) => {
+        if (b.dataset.themeSet === "light" || b.dataset.themeSet === "dark") {
+          b.classList.toggle("is-selected", b.dataset.themeSet === theme);
+        }
+      });
+      try { window.localStorage.setItem(THEME_KEY, theme); } catch (err) {}
+    }
+    if (typeof mono === "boolean") {
+      document.body.classList.toggle("is-monospaced", mono);
+      buttons.forEach((b) => {
+        if (b.dataset.themeSet === "mono") b.classList.toggle("is-selected", mono);
+      });
+      try { window.localStorage.setItem(MONO_KEY, mono ? "1" : "0"); } catch (err) {}
+    }
+    if (persist) {
+      const patch = {};
+      if (theme === "light" || theme === "dark") {
+        userTouchedPrefs.add("theme");
+        patch.theme = theme;
+      }
+      if (typeof mono === "boolean") {
+        userTouchedPrefs.add("mono");
+        patch.mono = mono;
+      }
+      queueRemotePrefs(patch);
+    }
+  }
+
+  // ------------------------------------------------------------ 主题开关
+  function initThemeSwitch() {
+    const buttons = document.querySelectorAll(".theme-btn");
+    try {
+      const savedTheme = window.localStorage.getItem(THEME_KEY);
+      const savedMono = window.localStorage.getItem(MONO_KEY);
+      applyThemeState(
+        savedTheme === "light" || savedTheme === "dark" ? savedTheme : null,
+        savedMono === "1" ? true : savedMono === "0" ? false : undefined,
+        false,
+      );
+    } catch (err) {}
+    buttons.forEach((b) => b.addEventListener("click", () => {
+      const mode = b.dataset.themeSet;
       if (mode === "mono") {
-        document.body.classList.add("is-monospaced");
-        // 等宽只切换字体，主题保持现状
+        applyThemeState(null, !document.body.classList.contains("is-monospaced"), true);
         return;
       }
-      document.body.classList.remove("is-monospaced");
-      root.dataset.theme = mode;
-      buttons.forEach((b) => b.classList.toggle("is-selected", b.dataset.themeSet === mode));
-    }
-    buttons.forEach((b) => b.addEventListener("click", () => apply(b.dataset.themeSet)));
+      applyThemeState(mode, false, true);
+    }));
   }
 
   // ------------------------------------------------------------ 滚动进度
@@ -866,7 +929,7 @@
         try {
           const resp = await bridge.apiPost(`${API}/action`, { action: "slang_clear", group: row.dataset.group });
           toast((resp && resp.message) || "已清空", !resp || !resp.ok);
-          await refresh();
+          await Promise.all([loadRemotePrefs(), refresh()]);
         } catch (err) { toast(err.message || String(err), true); }
       };
     });
@@ -1688,11 +1751,13 @@
   const ZOOM_KEY = "pl_panel_zoom";
   const ZOOM_STEPS = [1, 1.1, 1.2, 1.35, 1.5, 1.75, 2];
 
-  function applyZoom(scale) {
+  function applyZoom(scale, persist = true) {
     // localStorage 读回来是字符串，必须先转数字再比对，否则 includes 永远 false，
-    // 每次打开都被重置成 100%（这就是之前缩放记不住的根因）。
+    // 每次打开都被重置成 100%。
     const num = Number(scale);
-    const v = Number.isFinite(num) && ZOOM_STEPS.includes(num) ? num : 1;
+    const v = Number.isFinite(num) && ZOOM_STEPS.some((s) => Math.abs(s - num) < 0.001)
+      ? ZOOM_STEPS.find((s) => Math.abs(s - num) < 0.001)
+      : 1;
     document.documentElement.style.setProperty("--fs", String(v));
     if (el.zoomVal) el.zoomVal.textContent = `${Math.round(v * 100)}%`;
     if (el.zoomIn) el.zoomIn.disabled = v >= ZOOM_STEPS[ZOOM_STEPS.length - 1];
@@ -1700,7 +1765,11 @@
     try {
       window.localStorage.setItem(ZOOM_KEY, String(v));
     } catch (err) {
-      /* 无痕模式下存不了就算了 */
+      /* sandbox iframe 下 localStorage 不可用时走后端持久化 */
+    }
+    if (persist) {
+      userTouchedPrefs.add("zoom");
+      queueRemotePrefs({ zoom: v });
     }
     requestAnimationFrame(() => updateNavFrameMetrics());
   }
@@ -1716,7 +1785,7 @@
       ZOOM_STEPS.length - 1,
       Math.max(0, idx + direction),
     )];
-    applyZoom(next);
+    applyZoom(next, true);
   }
 
   function initZoom() {
@@ -1726,7 +1795,7 @@
     } catch (err) {
       saved = 1;
     }
-    applyZoom(saved);
+    applyZoom(saved, false);
     if (el.zoomIn) el.zoomIn.addEventListener("click", () => stepZoom(1));
     if (el.zoomOut) el.zoomOut.addEventListener("click", () => stepZoom(-1));
   }
@@ -1735,7 +1804,7 @@
   const TAB_KEY = "pl_panel_tab";
   const TABS = ["overview", "private", "group", "slang", "interact", "worker", "rhythm", "outbound", "schedule", "debounce", "identity", "context", "blacklist"];
 
-  function setTab(name) {
+  function setTab(name, persist = true) {
     const tab = TABS.includes(name) ? name : "overview";
     const tabItems = Array.from(document.querySelectorAll("#tabs li[data-tab]"));
     let activeIdx = 0;
@@ -1768,6 +1837,10 @@
     try {
       window.localStorage.setItem(TAB_KEY, tab);
     } catch (err) {}
+    if (persist) {
+      userTouchedPrefs.add("tab");
+      queueRemotePrefs({ tab });
+    }
   }
 
   function initTabs() {
@@ -1776,17 +1849,17 @@
       saved = window.localStorage.getItem(TAB_KEY) || "overview";
       if (!TABS.includes(saved)) saved = "overview";
     } catch (err) {}
-    setTab(saved);
+    setTab(saved, false);
     document.querySelectorAll("#tabs li").forEach((li) => {
       if (!li.dataset.tab) return; // 分组标题不可点击
-      li.addEventListener("click", () => setTab(li.dataset.tab));
+      li.addEventListener("click", () => setTab(li.dataset.tab, true));
     });
   }
 
   // 群聊列表的折叠，状态记在本地，下次打开还是上次那样
   const FOLD_KEY = "pl_group_folded";
 
-  function setGroupFold(folded) {
+  function setGroupFold(folded, persist = true) {
     if (!el.groupSec || !el.groupFold) return;
     el.groupSec.classList.toggle("folded", folded);
     el.groupFold.textContent = folded ? "展开" : "收起";
@@ -1794,6 +1867,10 @@
     try {
       window.localStorage.setItem(FOLD_KEY, folded ? "1" : "0");
     } catch (err) {}
+    if (persist) {
+      userTouchedPrefs.add("group_fold");
+      queueRemotePrefs({ group_fold: Boolean(folded) });
+    }
   }
 
   function initGroupFold() {
@@ -1803,11 +1880,41 @@
     } catch (err) {
       folded = false;
     }
-    setGroupFold(folded);
+    setGroupFold(folded, false);
     if (el.groupFold) {
       el.groupFold.addEventListener("click", () => {
-        setGroupFold(!el.groupSec.classList.contains("folded"));
+        setGroupFold(!el.groupSec.classList.contains("folded"), true);
       });
+    }
+  }
+
+  async function loadRemotePrefs() {
+    if (!bridge) return;
+    try {
+      const resp = await bridge.apiGet(`${API}/prefs`);
+      const p = resp && resp.prefs;
+      if (!p || typeof p !== "object") return;
+      if (p.zoom != null && !userTouchedPrefs.has("zoom")) {
+        applyZoom(p.zoom, false);
+      }
+      const nextTheme = (p.theme === "light" || p.theme === "dark") && !userTouchedPrefs.has("theme")
+        ? p.theme : null;
+      const nextMono = typeof p.mono === "boolean" && !userTouchedPrefs.has("mono")
+        ? p.mono : undefined;
+      if (nextTheme !== null || nextMono !== undefined) {
+        applyThemeState(nextTheme, nextMono, false);
+      }
+      if (typeof p.tab === "string" && TABS.includes(p.tab) && !userTouchedPrefs.has("tab")) {
+        setTab(p.tab, false);
+      }
+      if (typeof p.group_fold === "boolean" && !userTouchedPrefs.has("group_fold")) {
+        setGroupFold(p.group_fold, false);
+      }
+      if (Object.keys(pendingPrefPatch).length) {
+        queueRemotePrefs({});
+      }
+    } catch (err) {
+      /* 兼容老后端或网络抖动，静默回退默认值 */
     }
   }
 

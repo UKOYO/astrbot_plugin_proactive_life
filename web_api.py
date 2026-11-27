@@ -15,7 +15,7 @@ from astrbot.api.web import error_response, json_response
 from astrbot.api.web import request as web_request
 
 from . import name_resolver
-from . import panel_common, panel_status, panel_config, panel_actions
+from . import panel_common, panel_status, panel_config, panel_actions, panel_prefs
 from .panel_config import EDITABLE  # 重新导出，保持向后兼容
 
 PLUGIN_NAME = "astrbot_plugin_proactive_life"
@@ -196,10 +196,28 @@ def make_handlers(plugin):
             logger.warning("proactive_life | 面板动作执行失败: %s", exc, exc_info=True)
             return error_response("动作执行失败", status_code=500)
 
+    async def api_prefs():
+        if web_request.method.upper() == "POST":
+            try:
+                payload = await web_request.json(default={})
+                if not isinstance(payload, dict):
+                    return error_response("请求体不是 JSON 对象", status_code=400)
+                prefs = panel_prefs.save_prefs(payload, plugin)
+                return json_response({"ok": True, "prefs": prefs})
+            except Exception as exc:
+                logger.warning("proactive_life | 面板偏好保存失败: %s", exc)
+                return error_response("偏好保存失败", status_code=500)
+        try:
+            return json_response({"ok": True, "prefs": panel_prefs.load_prefs(plugin)})
+        except Exception as exc:
+            logger.warning("proactive_life | 面板偏好读取失败: %s", exc)
+            return error_response("偏好读取失败", status_code=500)
+
     return {
         "status": (api_status, ["GET"], "主动中枢：运行状态快照"),
         "config": (api_config, ["GET", "POST"], "主动中枢：读取与写入配置"),
         "action": (api_action, ["POST"], "主动中枢：日程生成与保存"),
+        "prefs": (api_prefs, ["GET", "POST"], "主动中枢：面板本地偏好读写"),
     }
 
 
