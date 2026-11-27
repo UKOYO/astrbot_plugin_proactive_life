@@ -196,15 +196,20 @@ body { zoom: var(--fs); }
   position: fixed; z-index: 12;
   left: calc(var(--pad) * 2);
   top: calc(var(--pad) * 2);
+  bottom: calc(var(--pad) * 2);  /* 顶底贴合画框，在任意 zoom 缩放下都严格受可视高度约束 */
   width: 300px;
+  display: flex;
+  flex-direction: column;
 }
 .siteHeader__title {
+  flex: 0 0 auto;
   font-weight: 200;
   font-size: var(--t-hero);
   line-height: .95;
   letter-spacing: -.02em;
 }
 .siteHeader__label {
+  flex: 0 0 auto;
   margin-top: 14px;
   font-family: var(--mono);
   font-weight: 300;
@@ -212,15 +217,30 @@ body { zoom: var(--fs); }
   letter-spacing: .06em;
   opacity: .75;
 }
-.siteHeader__nav { margin-top: 40px; }
+.siteHeader__nav {
+  flex: 1 1 auto;
+  min-height: 0;                 /* 允许在页面放大/矮屏时收缩并内部滚动 */
+  margin-top: 28px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 为左侧 -14px 的选中圆点预留内边距，避免 overflow 裁切 */
+  padding: 2px 8px 12px 18px;
+  margin-left: -18px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-soft, var(--c-line)) transparent;
+}
+.siteHeader__nav::-webkit-scrollbar { width: 3px; }
+.siteHeader__nav::-webkit-scrollbar-track { background: transparent; }
+.siteHeader__nav::-webkit-scrollbar-thumb {
+  background: var(--line-soft, var(--c-line));
+  border-radius: 999px;
+}
 .siteHeader__nav ol {
   list-style: none;
   display: flex;
   flex-direction: column;
-  flex-wrap: wrap;              /* 纵向排不下时自动续到第二列 */
-  align-content: flex-start;
-  gap: 11px 44px;
-  max-height: calc(100vh - 300px);
+  gap: 11px;
 }
 .siteHeader__nav li.nav__group {
   font-family: var(--mono);
@@ -254,9 +274,9 @@ body { zoom: var(--fs); }
 @media (hover: hover) { .text-btn:hover { opacity: .35; } }
 
 .pulse {
-  position: fixed; z-index: 12;
-  left: calc(var(--pad) * 2);
-  bottom: calc(var(--pad) * 2);
+  flex: 0 0 auto;
+  margin-top: 14px;
+  padding-top: 8px;
   display: flex; align-items: center; gap: 8px;
   font-family: var(--mono); font-size: 11px;
 }
@@ -775,15 +795,15 @@ body.is-monospaced .sec__head span { font-family: var(--mono); }
 
 /* ---------------------------------------------------------------- 窄屏 / 平板 */
 @media (max-width: 900px) {
-  .siteHeader { position: relative; left: auto; top: auto; width: auto; padding: var(--pad); }
+  .siteHeader { position: relative; left: auto; top: auto; bottom: auto; width: auto; display: block; padding: var(--pad); }
   .siteHeader__title { font-size: 42px; }
-  .siteHeader__nav { margin-top: 24px; }
+  .siteHeader__nav { margin-top: 24px; overflow: visible; padding: 0; margin-left: 0; }
   .siteHeader__nav ol {
     flex-direction: row; flex-wrap: wrap; gap: 10px 20px;
   }
   .siteHeader__nav li ._dot { display: none; }   /* 横排时小圆点会错位 */
   .siteHeader__nav li.is-selected ._text { font-size: 14px; }
-  .pulse { position: relative; left: auto; bottom: auto; padding: 0 var(--pad); }
+  .pulse { margin-top: 14px; padding: 0; }
   .content { margin-left: 0; padding: var(--pad) var(--pad) 120px; }
   .content__inner { margin: 0; max-width: none; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
@@ -847,7 +867,7 @@ body.is-monospaced .sec__head span { font-family: var(--mono); }
 
   .zoomer__btn { padding: 2px 4px; }
   .zoomer__val { min-width: 28px; font-size: 9px; }
-  .pulse { padding: 0 14px; }
+  .pulse { padding: 0; }
 }
 
 /* ---------------------------------------------------------------- 超窄屏 */
