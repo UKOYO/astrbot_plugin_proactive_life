@@ -13,7 +13,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .rhythm_trimmer import (
-    has_markdown, human_pause, strip_faces, strip_trailing_punct, split_message,
+    has_markdown, human_pause, is_work_content, strip_faces, strip_trailing_punct, split_message,
 )
 
 
@@ -71,7 +71,7 @@ class RhythmMixin:
     def _rhythm_target(self) -> int:
         return max(6, self._rhythm_num("节奏_每段字数"))
 
-    def _rhythm_plain_chain(self, result):
+    def _rhythm_plain_chain(self, result, event=None):
         """驗證 result 是否為純文字 LLM 回覆，回傳 (full, plain_idx) 或 None。"""
         from astrbot.core.message.components import Plain
 
@@ -85,10 +85,18 @@ class RhythmMixin:
         full = "".join(result.chain[i].text for i in plain_idx)
         if not full.strip():
             return None
-        # 干活场景直接放过（代码/表格/列表）
-        if self._rhythm_on("节奏_表格代码不拆") and has_markdown(full):
-            logger.debug("[节奏修剪] 含 Markdown 结构，不拆条")
-            return None
+        # 干活场景直接放过（Markdown 结构 / 技术工作内容 / 前置工作标记）
+        if self._rhythm_on("节奏_表格代码不拆"):
+            flagged_work = False
+            if event is not None:
+                try:
+                    get_extra = getattr(event, "get_extra", None)
+                    flagged_work = bool(get_extra("_pl_is_work")) if callable(get_extra) else False
+                except Exception:  # noqa: BLE001
+                    flagged_work = False
+            if flagged_work or has_markdown(full) or is_work_content(full):
+                logger.debug("[节奏修剪] 含 Markdown 或工作技术内容，不拆条")
+                return None
         return full, plain_idx
 
     def _rhythm_prepare(self, full: str) -> tuple[str, list[str]]:
@@ -190,7 +198,7 @@ class RhythmMixin:
             # 无法判定时维持原行为：继续处理
             logger.debug("[节奏修剪] 无法判定是否 LLM 结果: %s", e)
 
-        parsed = self._rhythm_plain_chain(result)
+        parsed = self._rhythm_plain_chain(result, event=event)
         if parsed is None:
             return
         full, plain_idx = parsed

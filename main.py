@@ -1322,6 +1322,15 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             except Exception:  # noqa: BLE001
                 pass
 
+            # 工作/技术汇报内容标记：在八股清洗前打标，确保后续节奏修剪整条放行
+            try:
+                from .rhythm_trimmer import is_work_content
+
+                if is_work_content(text):
+                    event.set_extra("_pl_is_work", True)
+            except Exception:  # noqa: BLE001
+                pass
+
             from .modules.outbound import polish_text
 
             cleaned = polish_text(text, self.cfg, event=event, stage="polish_resp")

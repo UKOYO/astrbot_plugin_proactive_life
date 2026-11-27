@@ -354,12 +354,17 @@ class ProsePolisher:
     # ------------------------------------------------------------ 管线
 
     def _apply_ai_rules(
-        self, body: str, disabled: set, minimal: bool = False
+        self,
+        body: str,
+        disabled: set,
+        minimal: bool = False,
+        preserve_structure: bool = False,
     ) -> tuple[str, int, list[str]]:
         """跑 AI 八股规则；带词池的走洗牌抽取，其余直接替换。
 
         ``minimal=True``（默认档）时只跑格式类规则，其余（开场白/客服腔/升华/排比/
         冗余修饰/职场黑话）一律跳过——这些靠上游 prompt 治，正则硬改只会改坏话。
+        ``preserve_structure=True``（工作/技术汇报）时保留列表、加粗、标题层级。
         ``detect_only`` 规则两种档位都只统计、不改写。
         """
         from .polish_ai_rules import ALL_AI_RULES
@@ -370,6 +375,8 @@ class ProsePolisher:
             if rule["id"] in disabled:
                 continue
             if minimal and rule.get("category") not in _MINIMAL_AI_CATEGORIES and not rule.get("detect_only"):
+                continue
+            if preserve_structure and rule.get("category") == "structure" and not rule.get("detect_only"):
                 continue
             if rule.get("detect_only"):
                 try:
@@ -404,6 +411,12 @@ class ProsePolisher:
         # 档位：minimal（默认，止损档）只做格式兜底 + 整句裁剪 + 只统计；
         # full 才会跑换词/删句中短语/水词/合句这些需要语义理解的操作。
         minimal = str(self.config.get("清洗档位", "minimal") or "minimal").strip().lower() != "full"
+        try:
+            from ..rhythm_trimmer import is_work_content
+
+            work_content = is_work_content(text)
+        except Exception:  # noqa: BLE001
+            work_content = False
         self.last_risk = {}          # 高风险句式统计（只观测不改写）
         body, vault = self._protect(text)
         # 高风险句式必须在**动手清洗之前**、且针对**挖空保护区后的正文**统计：
@@ -434,9 +447,12 @@ class ProsePolisher:
                     hits += n
                     hit_ids.append("trim_narration_head")
 
-        # 0. AI 八股清洗：止损档只剥格式噪音（加粗/标题/列表/分隔线）
+        # 0. AI 八股清洗：止损档只剥格式噪音（加粗/标题/列表/分隔线）；
+        #    工作/技术汇报保留列表、加粗与标题层级，不把排版糊成纯文本。
         if self.config.get("清AI八股", True):
-            body, n, ids = self._apply_ai_rules(body, disabled, minimal=minimal)
+            body, n, ids = self._apply_ai_rules(
+                body, disabled, minimal=minimal, preserve_structure=work_content
+            )
             if n:
                 hits += n
                 hit_ids.extend(ids)

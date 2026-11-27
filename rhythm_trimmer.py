@@ -78,6 +78,70 @@ def has_markdown(text: str) -> bool:
     return False
 
 
+_URL_RE = re.compile(r"https?://\S+", re.I)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]{1,80}`")
+_FILE_LOC_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:[\w.-]+/[\w./-]+|"
+    r"[\w.-]+\.(?:py|js|ts|jsx|tsx|json|ya?ml|toml|ini|cfg|conf|sh|ps1|bat|"
+    r"sql|go|rs|java|cpp|c|h|hpp|css|html|xml|log|lock))(?::\d+(?:-\d+)?)?"
+    r"(?![A-Za-z0-9_])",
+    re.I,
+)
+_IDENT_RE = re.compile(r"(?<![A-Za-z0-9_])[a-zA-Z_][a-zA-Z0-9]*_[a-zA-Z0-9_]+(?![A-Za-z0-9_])")
+_TRACE_RE = re.compile(
+    r"Traceback \(most recent call last\)|"
+    r"(?:Assertion|Type|Value|Key|Attribute|Runtime|Import|Syntax)Error\b|"
+    r"\bpytest\b|\bgit\s+(?:push|pull|commit|status|diff|checkout|merge|rebase)\b|"
+    r"\b\d+\s+passed\b"
+)
+_LIST_ITEM_RE = re.compile(r"^\s*(?:\d+(?:\.(?!\d)|[、)])|[-*+])\s+\S", re.M)
+
+
+def is_work_content(text: str) -> bool:
+    """识别真正的干活/技术/结构化汇报内容，避免被日常节奏拆条与洗格式误伤。
+
+    宁紧勿松：带一两个技术词的日常闲聊、情绪碎碎念、短句子必须返回 False，
+    保证日常对话依然正常分段。
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    # 1. 硬结构：代码块、Markdown 表格、# 标题
+    if "```" in s:
+        return True
+    if re.search(r"^\s*\|.*\|\s*$", s, re.M):
+        return True
+    if re.search(r"^#{1,6}\s+\S", s, re.M):
+        return True
+
+    # 剥掉 URL 避免链接里的路径/下划线误触发
+    plain = _URL_RE.sub(" ", s)
+    code_cnt = len(_INLINE_CODE_RE.findall(plain))
+    file_cnt = len(_FILE_LOC_RE.findall(plain))
+    ident_cnt = len(_IDENT_RE.findall(plain))
+    trace_cnt = len(_TRACE_RE.findall(plain))
+    tech_score = code_cnt + file_cnt + ident_cnt + trace_cnt
+
+    n = len(s)
+    # 2. 纯文字技术/排障说明（哪怕没有列表）
+    if code_cnt >= 2 and n >= 40:
+        return True
+    if file_cnt >= 2 and n >= 50:
+        return True
+    if file_cnt >= 1 and (code_cnt + ident_cnt + trace_cnt) >= 1 and n >= 50:
+        return True
+    if ident_cnt >= 2 and n >= 60:
+        return True
+    if trace_cnt >= 1 and n >= 50:
+        return True
+
+    # 3. 结构化工作列表：至少 2 条列表项，且够长或带有技术信息
+    list_cnt = len(_LIST_ITEM_RE.findall(s))
+    if list_cnt >= 2 and (n >= 150 or tech_score >= 1):
+        return True
+    return False
+
+
 def strip_faces(text: str) -> Tuple[str, int]:
     """删颜文字。先固定串，再保守正则。"""
     n = 0
@@ -125,15 +189,26 @@ def _is_brace_block(text: str) -> bool:
     return bool(s) and s[0] in "{｛" and s[-1] in "}｝"
 
 
+def _inline_code_mask(text: str) -> list[bool]:
+    """标记处于成对反引号 `...` 内部的字符下标，避免拆条时把行内代码劈断。"""
+    n = len(text)
+    mask = [False] * n
+    for m in _INLINE_CODE_RE.finditer(text):
+        for idx in range(m.start(), m.end()):
+            mask[idx] = True
+    return mask
+
+
 def _split_plain(text: str, target: int) -> List[str]:
     """纯文本按句读切；单句超长再按逗号/空格切。这里面不处理花括号。"""
     n = len(text)
+    in_code = _inline_code_mask(text)
 
     # ---- 句级切分 ----
     sent_ranges: List[Tuple[int, int]] = []
     start = 0
     for i, ch in enumerate(text):
-        if ch in "。！？!?…":
+        if not in_code[i] and ch in "。！？!?…":
             sent_ranges.append((start, i + 1))
             start = i + 1
     if start < n:
@@ -151,16 +226,17 @@ def _split_plain(text: str, target: int) -> List[str]:
         # ---- 逗号级切分 ----
         cuts = []
         for i in range(s, e):
+            if in_code[i]:
+                continue
             ch = text[i]
             if ch in "，,；;、":
                 cuts.append(i + 1)
             elif ch in " 　":
-                # 中文口白常用空格断句；英文单词中间那个空格别切
+                # 只有左右两边都是非 ASCII（中文口白用空格代替逗号）才在这里切；
+                # 中英/反引号/半角符号之间的排版空格绝不当断点腰斩。
                 left = text[i - 1] if i - 1 >= s else ""
                 right = text[i + 1] if i + 1 < e else ""
-                ascii_mid = (left.isascii() and left.isalnum()
-                             and right.isascii() and right.isalnum())
-                if not ascii_mid:
+                if left and right and not left.isascii() and not right.isascii():
                     cuts.append(i + 1)
         cuts.append(e)
         buf = ""
