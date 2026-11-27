@@ -951,7 +951,8 @@ body.is-monospaced .sec__head span { font-family: var(--mono); }
   opacity: .45; letter-spacing: .02em;
 }
 
-/* 线稿人物背景：纯黑 #000000，放大铺满背景，缓慢明暗起伏 */
+/* 线稿人物背景：纯黑 #000000，放大铺满背景，缓慢明暗起伏
+   注意：CSS @keyframes 的 opacity 会覆盖静态 opacity，深浅两套主题必须分用独立动画 */
 .bg-figure {
   position: fixed;
   left: 2vw;
@@ -961,18 +962,45 @@ body.is-monospaced .sec__head span { font-family: var(--mono); }
   z-index: 1;
   pointer-events: none;
   user-select: none;
-  opacity: .55;
+  opacity: .11;
   filter: none;                /* 保持 SVG 原色 #000000，不反色、不加色差 */
   mix-blend-mode: multiply;
+  -webkit-mask-image: linear-gradient(90deg, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, .88) 34%, rgba(0, 0, 0, .4) 60%, rgba(0, 0, 0, .22) 100%);
+  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, .88) 34%, rgba(0, 0, 0, .4) 60%, rgba(0, 0, 0, .22) 100%);
+  animation: figure-glow-light 18s ease-in-out infinite;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .bg-figure {
+    opacity: .6;
+    filter: none;
+    mix-blend-mode: multiply;
+    -webkit-mask-image: none;
+    mask-image: none;
+    animation: figure-glow 18s ease-in-out infinite;
+  }
+}
+[data-theme="dark"] .bg-figure {
+  opacity: .6;
+  filter: none;
+  mix-blend-mode: multiply;
+  -webkit-mask-image: none;
+  mask-image: none;
   animation: figure-glow 18s ease-in-out infinite;
 }
-[data-theme="dark"] .bg-figure { opacity: .6; filter: none; mix-blend-mode: multiply; }
-@media (prefers-color-scheme: dark) {
-  .bg-figure { opacity: .6; filter: none; mix-blend-mode: multiply; }
+[data-theme="light"] .bg-figure {
+  opacity: .11;
+  filter: none;
+  mix-blend-mode: multiply;
+  -webkit-mask-image: linear-gradient(90deg, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, .88) 34%, rgba(0, 0, 0, .4) 60%, rgba(0, 0, 0, .22) 100%);
+  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, .88) 34%, rgba(0, 0, 0, .4) 60%, rgba(0, 0, 0, .22) 100%);
+  animation: figure-glow-light 18s ease-in-out infinite;
 }
-[data-theme="light"] .bg-figure { opacity: .2; mix-blend-mode: multiply; }
 @keyframes figure-glow {
   0%, 100% { opacity: .42; }
   50%      { opacity: .6; }
+}
+@keyframes figure-glow-light {
+  0%, 100% { opacity: .075; }
+  50%      { opacity: .12; }
 }
 @media (max-width: 900px) { .bg-figure { display: none; } }
