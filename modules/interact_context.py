@@ -38,6 +38,74 @@ _MEDIA_SPECIFICITY = {"[图片]": 1, "[表情包]": 2, "[表情包 (动图/GIF)]
 #: 带关键词的语义标签前缀（``[发送了表情包: 摸头 (动图/GIF)]``）
 _SEMANTIC_STICKER_PREFIX = "[发送了表情包"
 
+#: 系统状态符号：AstrBot 的指令回执几乎都带，正常群聊几乎不带
+_RECEIPT_SYMBOLS = ("✅", "❌", "⚠", "✔", "✖", "☑", "⛔")
+
+#: 指令回执的典型开头（英文大小写不敏感），命中即视为系统回执
+_RECEIPT_PREFIXES = (
+    "requested to stop",
+    "successfully switched",
+    "successfully reset",
+    "current provider",
+    "usage:",
+    "用法:",
+    "用法：",
+    "已切换",
+    "切换成功",
+    "已重置",
+    "重置成功",
+    "已停止",
+    "已启用",
+    "已禁用",
+    "已开启",
+    "已关闭",
+    "已设置",
+    "设置成功",
+    "操作成功",
+    "新会话已",
+    "已创建新会话",
+    "当前模型",
+    "当前会话",
+    "当前提供商",
+    "未知指令",
+    "无效的指令",
+)
+
+#: 单独出现的指令名（用户发 ``/provider``、``/new`` 这类，本身没有任何聊天信息量）
+_COMMAND_WORDS = frozenset({
+    "provider", "providers", "new", "reset", "help", "model", "models",
+    "persona", "personas", "plugin", "plugins", "llm", "session", "sid",
+    "history", "stop", "restart", "reload", "config", "dashboard",
+    "websearch", "kb", "tts", "stt", "version", "alter_cmd",
+})
+
+#: 指令前缀（``/provider``、``！new`` 之类）
+_COMMAND_PREFIXES = "/!！#／"
+
+
+def is_receipt_text(text: str) -> bool:
+    """是不是「指令类回执 / 系统消息」——这类内容不该进戳/艾特上下文。
+
+    踩过的坑：群里只要有人发过 ``/provider``、``/new``，或者机器人回过一句
+    ``✅ Requested to stop 1 running tasks.``，这些都会落到上下文窗口里。
+    纯艾特时窗口「非空」，逻辑就误判成「用户先说过话」，抢答一句空话，
+    用户随后补的正文反而被当成普通群消息漏掉。
+    """
+    body = str(text or "").strip()
+    if not body:
+        return False
+    if any(sym in body for sym in _RECEIPT_SYMBOLS):
+        return True
+    low = body.lower()
+    if low.startswith(_RECEIPT_PREFIXES):
+        return True
+    # 指令本身：``/provider`` / ``！new`` / 裸 ``provider``
+    parts = body.lstrip(_COMMAND_PREFIXES).split()
+    if not parts:
+        return False
+    word = parts[0].strip(":：。.!！?？").lower()
+    return bool(word) and word in _COMMAND_WORDS
+
 
 def _media_rank(text: str) -> int:
     """纯媒体标签的具体程度（0 表示不是图片/表情包占位）。"""
@@ -134,11 +202,16 @@ class InteractContext:
         key = str(group or "")
         if not key:
             return
+        urls = [str(u) for u in (image_urls or []) if u]
+        # 指令类回执（``/provider``、``/new``、带 ✅ 的系统消息）不进上下文：
+        # 它们既不是群友的聊天内容，也不该让纯艾特误判成「用户先说过话」。
+        if not urls and is_receipt_text(text):
+            return
         bucket = self._recent.setdefault(key, deque(maxlen=self._window))
         bucket.append(InteractItem(
             sender=str(sender or ""),
             text=str(text or ""),
-            image_urls=[str(u) for u in (image_urls or []) if u],
+            image_urls=urls,
             role="self" if role == "self" else "user",
             sender_name=str(sender_name or "").strip(),
         ))
@@ -230,13 +303,45 @@ class InteractContext:
                 out.append(it)
         return out
 
+    def relevant(
+        self,
+        group: str,
+        sender: str,
+        seconds: float | None = None,
+    ) -> list[InteractItem]:
+        """只取「跟这次触发相关」的上下文：同一个人说的 + 我自己刚发的。
+
+        为什么不能直接用 :meth:`recent`：群里一直有人在聊天时窗口永远非空，
+        纯艾特/戳一戳就会被别人的闲聊顶成「情景 A」，抢答一句跟眼前无关的话。
+        别的群友的发言只有在被本次触发的人自己接上时才有意义，所以这里剔掉。
+        """
+        who = str(sender or "")
+        return [
+            it
+            for it in self.recent(group, seconds)
+            if it.is_self() or (who and it.sender == who)
+        ]
+
+    def same_sender(
+        self,
+        group: str,
+        sender: str,
+        seconds: float | None = None,
+    ) -> list[InteractItem]:
+        """只取触发者本人说过的内容（不含机器人自己的发言）。"""
+        who = str(sender or "")
+        if not who:
+            return []
+        return [it for it in self.recent(group, seconds) if it.sender == who and not it.is_self()]
+
     # ---- pending 触发 ----
     def set_pending(self, group: str, kind: str, sender: str) -> None:
         self._pending[str(group or "")] = PendingTrigger(
             kind=str(kind or "poke"), sender=str(sender or ""), group=str(group or "")
         )
 
-    def pop_pending(self, group: str, seconds: float | None = None) -> PendingTrigger | None:
+    def peek_pending(self, group: str, seconds: float | None = None) -> PendingTrigger | None:
+        """看一眼有没有待合并的触发，但不消费它（过期则顺手清掉）。"""
         key = str(group or "")
         p = self._pending.get(key)
         if p is None:
@@ -245,7 +350,32 @@ class InteractContext:
         if time.time() - p.at > limit:
             self._pending.pop(key, None)
             return None
+        return p
+
+    def pop_pending(self, group: str, seconds: float | None = None) -> PendingTrigger | None:
+        key = str(group or "")
+        if self.peek_pending(key, seconds) is None:
+            return None
         return self._pending.pop(key)
+
+    def take_pending_for(
+        self,
+        group: str,
+        sender: str,
+        seconds: float | None = None,
+    ) -> PendingTrigger | None:
+        """只有这条消息来自触发者本人时，才把 pending 消费掉。
+
+        pending 是按群存的：别人随便说一句就把它吃掉并触发回复，会出现
+        「@ 完等正文，结果别人一句闲聊把机器人勾走」，正文反而漏掉。
+        """
+        p = self.peek_pending(group, seconds)
+        if p is None:
+            return None
+        who = str(sender or "")
+        if p.sender and who and p.sender != who:
+            return None
+        return self.pop_pending(group, seconds)
 
     def has_pending(self, group: str) -> bool:
         return str(group or "") in self._pending

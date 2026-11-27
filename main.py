@@ -112,7 +112,7 @@ class _LiveConfig:
     "astrbot_plugin_proactive_life",
     "keyou",
     "自主生活与主动中枢",
-    "1.5.10",
+    "1.5.11",
     "一体化活人感中枢：贯通入站准入、主动生活、天气穿搭日程、人物情绪与群黑话感知、出站清洗与真人节奏",
 )
 class ProactiveLifePlugin(Star, RhythmMixin):
@@ -920,10 +920,14 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             try:
                 self._observe_group_interact(event)
                 # 情景 B：前面已戳/艾特，这条才来 → 合并发出
+                # 只认触发者本人：pending 是按群存的，别人随便说一句就把它吃掉
+                # 并触发回复，会出现「@ 完等正文，结果别人一句闲聊把机器人勾走」。
                 if bool(self.cfg.get("戳一戳_后续合并", True)):
-                    pending_hit = ctx.pop_pending(gid)
+                    pending_hit = ctx.take_pending_for(
+                        gid, str(event.get_sender_id() or "")
+                    )
                 if pending_hit:
-                    items = ctx.recent(gid)
+                    items = ctx.relevant(gid, pending_hit.sender)
                     from .modules.interact_context import build_prompt
 
                     prompt, images = build_prompt(
@@ -1388,13 +1392,39 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             # 两条分支互斥，避免「既立刻回、又被后续消息再触发一次」的双回复：
             #   情景 A：前面有内容 → 本次直接带上下文回复，不埋 pending
             #   情景 B：前面没内容 → 埋 pending，等后面那条消息一起合并回复，本次不回
+            #
+            # 纯艾特的额外一层：群里一直有人聊天时 recent 永远非空，只按「窗口有没有
+            # 东西」判断会让纯 @ 被别人的闲聊顶成情景 A，抢答一句跟眼前无关的话，
+            # 用户随后补的正文反而被当成普通群消息漏掉。所以纯 @ 且自己此前没说话时，
+            # 先挂起一小会儿等正文补上（等待秒数可配，0 = 关闭该行为）。
             ctx = getattr(self, "interact_ctx", None)
             items = ctx.recent(group, exclude_sender="") if (ctx and group) else []
 
             event.set_extra("_poke_trigger", True)
             event.set_extra("_poke_sender_id", sender)
 
-            if not items:
+            waited = False
+            wait_sec = float(self.cfg.get("戳一戳_纯艾特等待秒", 3) or 0)
+            if (
+                kind == "at"
+                and ctx is not None
+                and group
+                and wait_sec > 0
+                and bool(self.cfg.get("戳一戳_后续合并", True))
+                and not ctx.same_sender(group, sender)
+            ):
+                ctx.set_pending(group, kind, sender)
+                await asyncio.sleep(wait_sec)
+                waited = True
+                if not ctx.has_pending(group):
+                    return  # 等待期间用户补了正文，已由 on_group_message 合并回复
+                ctx.pop_pending(group)
+                items = ctx.same_sender(group, sender)
+            elif kind == "at" and ctx is not None and group:
+                # 自己刚说过话：只带他自己的那几条，别把别人的闲聊当接话依据
+                items = ctx.same_sender(group, sender) or items
+
+            if not items and not waited:
                 # 情景 B：没有任何上下文，等用户补正文/图片再一起回
                 if ctx and group:
                     ctx.set_pending(group, kind, sender)
