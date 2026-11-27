@@ -223,6 +223,76 @@ def inject_temp_part(req: Any, text: str, marker: str) -> bool:
         return False
 
 
+def inject_temp_images(
+    req: Any,
+    image_urls: list[str],
+    *,
+    max_images: int = 2,
+    modalities: Any = None,
+) -> int:
+    """把「机器人自己刚发出去的图」作为临时图片部件挂到本次请求上。
+
+    为什么必须走 ``extra_user_content_parts``：
+      - 塞进 ``system_prompt`` 会让 base64 撑爆 prompt 缓存，还会写进历史；
+      - 塞进 ``image_urls`` 会被当成「用户发的图」，模型分不清是谁发的。
+
+    安全阀：``modalities`` 传了非空列表且不含 ``image`` 时直接跳过——宿主的
+    ``sanitize_contexts_by_modalities`` 只清洗 ``contexts``，不清洗
+    ``extra_user_content_parts``，纯文本模型会原样收到图片块而报错。
+
+    Returns:
+        实际追加的图片部件数量。
+    """
+    urls: list[str] = []
+    seen: set[str] = set()
+    for u in list(image_urls or []):
+        s = str(u or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        urls.append(s)
+    if not urls:
+        return 0
+    if isinstance(modalities, list) and modalities and "image" not in modalities:
+        _debug("当前模型不支持图片模态，跳过临时图片注入")
+        return 0
+    try:
+        parts = getattr(req, "extra_user_content_parts", None)
+        if not isinstance(parts, list):
+            return 0
+        existing: set[str] = set()
+        for part in parts:
+            url = getattr(getattr(part, "image_url", None), "url", None)
+            if isinstance(url, str) and url:
+                existing.add(url)
+        try:
+            from astrbot.core.agent.message import ImageURLPart
+        except Exception as e:  # noqa: BLE001 - 旧版 AstrBot 没有该部件
+            _debug("ImageURLPart 不可用，本次不注入图片", e)
+            return 0
+        cap = max(1, int(max_images or 2))
+        added = 0
+        for u in urls:
+            if added >= cap:
+                break
+            if u in existing:
+                continue
+            try:
+                part = ImageURLPart(
+                    image_url=ImageURLPart.ImageURL(url=u)
+                ).mark_as_temp()
+            except Exception as e:  # noqa: BLE001
+                _debug("图片部件构造失败，跳过这一张", e)
+                continue
+            parts.append(part)
+            existing.add(u)
+            added += 1
+        return added
+    except Exception as e:  # noqa: BLE001
+        _debug("临时图片注入失败，本次按未注入处理", e)
+        return 0
+
+
 def inject_life_state(req: Any, block: str) -> bool:
     """把生活状态挂到本次请求上（统一走 inject_temp_part，避免两段重复代码）。
 

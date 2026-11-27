@@ -22,6 +22,7 @@ from astrbot_plugin_proactive_life.modules.interact_context import (  # noqa: E4
     RECENT_ECHO_MARKER,
     build_prompt,
     build_recent_echo_block,
+    collect_recent_self_images,
     is_pure_at,
 )
 
@@ -137,8 +138,8 @@ class TestInteractContext(unittest.TestCase):
             current_prompt="你发的这啥图啊",
         )
         self.assertIn(RECENT_ECHO_MARKER, block)
-        self.assertIn("- 小明：今天吃啥", block)
-        self.assertIn("- 我（唯笑）：[表情包]", block)
+        self.assertIn("- [刚刚] 小明：今天吃啥", block)
+        self.assertIn("- [刚刚] 我（唯笑）：[表情包]", block)
         # 末尾与当前 prompt 重复的用户发言已被剔除
         self.assertNotIn("你发的这啥图啊", block)
 
@@ -226,6 +227,308 @@ class TestInteractContext(unittest.TestCase):
             plugin.bot_echo_tap.uninstall_all()
 
         asyncio.run(run())
+
+
+class TestRelativeTimeAndHeaderHygiene(unittest.TestCase):
+    """相对时间锚点 + header 不再举例（防止模型把例子当真实群动态）。"""
+
+    def _items(self, now: float) -> list[InteractItem]:
+        return [
+            InteractItem(sender="u1", text="早上那个冷场", at=now - 3600 * 9, sender_name="小明"),
+            InteractItem(
+                sender="唯笑",
+                text="[表情包]",
+                at=now - 9,
+                role="self",
+                sender_name="唯笑",
+                image_urls=["data:image/jpeg;base64,AAA"],
+            ),
+        ]
+
+    def test_relative_time_rendered_per_item(self):
+        now = time.time()
+        block = build_recent_echo_block(
+            self._items(now), bot_name="唯笑", now=now, max_items=6
+        )
+        self.assertIn("[9小时前] 小明：早上那个冷场", block)
+        self.assertIn("[9秒前] 我（唯笑）：[表情包]", block)
+
+    def test_relative_time_just_now_and_minutes(self):
+        now = time.time()
+        items = [
+            InteractItem(sender="唯笑", text="刚发的", at=now - 1, role="self", sender_name="唯笑"),
+            InteractItem(sender="唯笑", text="两分钟前", at=now - 120, role="self", sender_name="唯笑"),
+        ]
+        block = build_recent_echo_block(items, bot_name="唯笑", now=now)
+        self.assertIn("[刚刚] 我（唯笑）：刚发的", block)
+        self.assertIn("[2分钟前] 我（唯笑）：两分钟前", block)
+
+    def test_header_contains_no_scenario_examples(self):
+        now = time.time()
+        block = build_recent_echo_block(self._items(now), bot_name="唯笑", now=now)
+        # 这些词一旦出现在 header，低智模型会当成「真的发生过」的群动态
+        for word in ("入群欢迎", "退群通知", "表情包制作", "欢迎我"):
+            self.assertNotIn(word, block)
+        self.assertIn("不要硬扯回很久以前的旧对话", block)
+
+    def test_attached_images_note(self):
+        now = time.time()
+        block = build_recent_echo_block(
+            self._items(now), bot_name="唯笑", now=now, has_attached_images=True
+        )
+        self.assertIn("附带的图片就是上面标「我（唯笑）」刚发出去的那张图", block)
+        without = build_recent_echo_block(self._items(now), bot_name="唯笑", now=now)
+        self.assertNotIn("附带的图片", without)
+
+
+class TestCollectRecentSelfImages(unittest.TestCase):
+    def test_collects_only_self_data_images_newest_first(self):
+        now = time.time()
+        items = [
+            InteractItem(
+                sender="唯笑", text="[图片]", at=now - 30, role="self", sender_name="唯笑",
+                image_urls=["data:image/jpeg;base64,OLD"],
+            ),
+            InteractItem(sender="u1", text="路人发的图", at=now - 20, image_urls=[
+                "data:image/jpeg;base64,USER"
+            ]),
+            InteractItem(
+                sender="唯笑", text="[表情包]", at=now - 5, role="self", sender_name="唯笑",
+                image_urls=[
+                    "data:image/jpeg;base64,NEW",
+                    "https://x.test/remote.png",
+                    "data:image/jpeg;base64,NEW",
+                ],
+            ),
+        ]
+        self.assertEqual(
+            collect_recent_self_images(items),
+            ["data:image/jpeg;base64,NEW", "data:image/jpeg;base64,OLD"],
+        )
+        self.assertEqual(
+            collect_recent_self_images(items, max_images=1),
+            ["data:image/jpeg;base64,NEW"],
+        )
+        self.assertEqual(collect_recent_self_images([]), [])
+
+
+class TestUpdateLastSelf(unittest.TestCase):
+    def test_upgrade_label_and_backfill_images(self):
+        ctx = InteractContext(window=6, ttl=20.0, self_ttl=90.0)
+        ctx.observe_self("g1", "[图片]", bot_name="唯笑")
+        self.assertTrue(
+            ctx.update_last_self(
+                "g1", text="[表情包]", image_urls=["data:image/jpeg;base64,AAA"]
+            )
+        )
+        self_items = [it for it in ctx.recent("g1") if it.is_self()]
+        self.assertEqual(len(self_items), 1)  # 不产生重复条目
+        self.assertEqual(self_items[0].text, "[表情包]")
+        self.assertEqual(self_items[0].image_urls, ["data:image/jpeg;base64,AAA"])
+
+    def test_less_specific_label_does_not_downgrade(self):
+        ctx = InteractContext(window=6, ttl=20.0, self_ttl=90.0)
+        ctx.observe_self("g1", "[表情包]", bot_name="唯笑")
+        self.assertFalse(ctx.update_last_self("g1", text="[图片]"))
+        self.assertEqual(ctx.recent("g1")[-1].text, "[表情包]")
+
+    def test_no_self_item_returns_false(self):
+        ctx = InteractContext()
+        ctx.observe("g1", "u1", "只有群友说话")
+        self.assertFalse(ctx.update_last_self("g1", text="[表情包]"))
+        self.assertFalse(ctx.update_last_self("empty-group", text="x"))
+
+
+class TestInjectTempImages(unittest.TestCase):
+    def test_injects_marked_temp_image_parts(self):
+        from astrbot_plugin_proactive_life.life_inject import inject_temp_images
+
+        req = SimpleNamespace(extra_user_content_parts=[], system_prompt="")
+        n = inject_temp_images(
+            req,
+            ["data:image/jpeg;base64,AAA", "data:image/jpeg;base64,AAA",
+             "data:image/jpeg;base64,BBB"],
+        )
+        self.assertEqual(n, 2)
+        urls = [p.image_url.url for p in req.extra_user_content_parts]
+        self.assertEqual(urls, ["data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB"])
+        # 不落盘：dump 后应被过滤掉，不进历史
+        for p in req.extra_user_content_parts:
+            self.assertTrue(getattr(p, "_no_save", False))
+
+    def test_idempotent_and_never_touches_system_prompt(self):
+        from astrbot_plugin_proactive_life.life_inject import inject_temp_images
+
+        req = SimpleNamespace(extra_user_content_parts=[], system_prompt="人设")
+        self.assertEqual(inject_temp_images(req, ["data:image/jpeg;base64,AAA"]), 1)
+        self.assertEqual(inject_temp_images(req, ["data:image/jpeg;base64,AAA"]), 0)
+        self.assertEqual(len(req.extra_user_content_parts), 1)
+        self.assertEqual(req.system_prompt, "人设")
+
+    def test_text_only_model_gets_no_image_part(self):
+        from astrbot_plugin_proactive_life.life_inject import inject_temp_images
+
+        req = SimpleNamespace(extra_user_content_parts=[], system_prompt="")
+        self.assertEqual(
+            inject_temp_images(
+                req, ["data:image/jpeg;base64,AAA"], modalities=["text", "tool_use"]
+            ),
+            0,
+        )
+        self.assertEqual(req.extra_user_content_parts, [])
+        self.assertEqual(
+            inject_temp_images(
+                req, ["data:image/jpeg;base64,AAA"], modalities=["text", "image"]
+            ),
+            1,
+        )
+
+    def test_no_parts_list_degrades_silently(self):
+        from astrbot_plugin_proactive_life.life_inject import inject_temp_images
+
+        self.assertEqual(inject_temp_images(SimpleNamespace(), ["data:image/jpeg;base64,A"]), 0)
+        self.assertEqual(inject_temp_images(None, ["data:image/jpeg;base64,A"]), 0)
+        req = SimpleNamespace(extra_user_content_parts=[], system_prompt="")
+        self.assertEqual(inject_temp_images(req, []), 0)
+
+
+def _stub_plugin(cfg: dict | None = None):
+    """搭一个够用的插件实例（不跑真实平台），用于钩子顺序验证。"""
+    from astrbot_plugin_proactive_life.main import ProactiveLifePlugin
+
+    plugin = object.__new__(ProactiveLifePlugin)
+    plugin._stop_event = asyncio.Event()
+    plugin.cfg = {
+        "模块_戳一戳": True,
+        "戳一戳_收录自己发言": True,
+        "戳一戳_上下文条数": 6,
+        "戳一戳_上下文秒数": 20,
+        **(cfg or {}),
+    }
+    plugin._module_on = lambda name: bool(plugin.cfg.get(f"模块_{name}", True))
+    plugin.group_h = SimpleNamespace(_bot_name=lambda: "唯笑")
+    plugin.motive_mgr = SimpleNamespace(peek_latest_unused=lambda: "")
+    plugin.person_memory = None
+    plugin.mood = None
+    plugin.context = SimpleNamespace(
+        platform_manager=SimpleNamespace(platform_insts=[]),
+        get_using_provider=lambda _u=None: None,
+    )
+    plugin.interact_ctx = InteractContext(window=6, ttl=20.0, self_ttl=90.0)
+    plugin.bot_echo = BotEchoLog(
+        on_record=plugin._collect_self_speech,
+        on_update=plugin._update_self_speech,
+    )
+    plugin.bot_echo_tap = BotSendTap(plugin.bot_echo.record)
+    return plugin
+
+
+class _Api:
+    async def call_action(self, action: str, **params):
+        return {"ok": True}
+
+
+def _group_event(group: str = "88888", message: str = "hyw"):
+    extras: dict = {}
+    return SimpleNamespace(
+        is_private_chat=lambda: False,
+        get_group_id=lambda: group,
+        get_sender_id=lambda: "10002",
+        get_sender_name=lambda: "李四",
+        message_str=message,
+        unified_msg_origin=f"aiocqhttp:GroupMessage:{group}",
+        get_extra=lambda k, d=None: extras.get(k, d),
+        set_extra=lambda k, v: extras.__setitem__(k, v),
+    )
+
+
+class TestLifeStateInjectionOrder(unittest.TestCase):
+    """【本群刚才的动态】必须排在【当前生活状态】之前，并带上自己刚发的图。"""
+
+    def test_echo_block_before_life_state_with_image(self):
+        import base64
+        import io
+
+        from PIL import Image
+
+        from astrbot_plugin_proactive_life import life_inject
+
+        plugin = _stub_plugin()
+        bot = SimpleNamespace(api=_Api())
+        plugin._ensure_echo_tap(SimpleNamespace(bot=bot))
+
+        # 一张 3 帧 GIF 表情包（模拟 memelite 走协议端发出去的那张「波纹」）
+        frames = [Image.new("RGB", (32, 24), c) for c in ((9, 9, 9), (99, 99, 99), (200, 200, 200))]
+        buf = io.BytesIO()
+        frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], duration=80)
+        gif_b64 = "base64://" + base64.b64encode(buf.getvalue()).decode()
+
+        async def run():
+            await bot.api.call_action(
+                "send_group_msg",
+                group_id="88888",
+                message=[{"type": "image", "data": {"file": gif_b64}}],
+            )
+            # 第二条路径（after_message_sent）把同一条报成 [图片]：只能合并成一条
+            plugin.bot_echo.record("88888", "[图片]", media=True)
+            self_items = [it for it in plugin.interact_ctx.recent("88888") if it.is_self()]
+            self.assertEqual(len(self_items), 1)
+            self.assertEqual(self_items[0].text, "[表情包]")
+            self.assertEqual(len(self_items[0].image_urls), 1)
+
+            orig = life_inject.read_schedule
+            life_inject.read_schedule = lambda *a, **k: {
+                "current_activity": "在窗边发呆",
+                "outfit": "灰色卫衣",
+                "schedule": "下午写代码",
+            }
+            try:
+                req = SimpleNamespace(
+                    prompt="hyw", extra_user_content_parts=[], system_prompt=""
+                )
+                await plugin.on_life_state_llm_request(_group_event(), req)
+            finally:
+                life_inject.read_schedule = orig
+
+            parts = req.extra_user_content_parts
+            texts = [getattr(p, "text", "") for p in parts]
+            echo_idx = next(i for i, t in enumerate(texts) if RECENT_ECHO_MARKER in t)
+            life_idx = next(i for i, t in enumerate(texts) if life_inject.MARKER in t)
+            self.assertLess(echo_idx, life_idx, "刚发生的群动态必须排在生活状态之前")
+
+            echo_text = texts[echo_idx]
+            self.assertIn("我（唯笑）：[表情包]", echo_text)
+            self.assertIn("附带的图片就是上面标", echo_text)
+            self.assertNotIn("入群欢迎", echo_text)
+
+            image_urls = [
+                p.image_url.url for p in parts if getattr(p, "image_url", None) is not None
+            ]
+            self.assertEqual(len(image_urls), 1)
+            self.assertTrue(image_urls[0].startswith("data:image/jpeg;base64,"))
+
+            plugin.bot_echo_tap.uninstall_all()
+
+        asyncio.run(run())
+
+    def test_no_image_part_when_nothing_attached(self):
+        from astrbot_plugin_proactive_life import life_inject
+
+        plugin = _stub_plugin()
+        plugin.interact_ctx.observe_self("88888", "成员 张三 离开了群聊", bot_name="唯笑")
+        orig = life_inject.read_schedule
+        life_inject.read_schedule = lambda *a, **k: {"current_activity": "在窗边发呆"}
+        try:
+            req = SimpleNamespace(prompt="刚谁退群了", extra_user_content_parts=[], system_prompt="")
+            asyncio.run(plugin.on_life_state_llm_request(_group_event(message="刚谁退群了"), req))
+        finally:
+            life_inject.read_schedule = orig
+        self.assertTrue(
+            any(RECENT_ECHO_MARKER in getattr(p, "text", "") for p in req.extra_user_content_parts)
+        )
+        self.assertFalse(
+            any(getattr(p, "image_url", None) is not None for p in req.extra_user_content_parts)
+        )
 
 
 if __name__ == "__main__":

@@ -25,6 +25,14 @@ from typing import Any
 #: 带字 @ 触发时的临时注入块幂等标记（不落盘、不影响 system_prompt 缓存）
 RECENT_ECHO_MARKER = "【本群刚才的动态】"
 
+#: 纯媒体标签的具体程度：[表情包] 比 [图片] 更具体，双路径上报时取更具体的那个
+#: （与 modules.bot_echo 的判定保持一致；这里只做标签排序，不重复媒体逻辑）
+_MEDIA_SPECIFICITY = {"[图片]": 1, "[表情包]": 2}
+
+
+def _media_rank(text: str) -> int:
+    return _MEDIA_SPECIFICITY.get(str(text or "").strip(), 0)
+
 
 @dataclass
 class InteractItem:
@@ -118,13 +126,70 @@ class InteractContext:
         ))
         self._expire(key)
 
-    def observe_self(self, group: str, text: str, bot_name: str = "") -> None:
+    def observe_self(
+        self,
+        group: str,
+        text: str,
+        *,
+        bot_name: str = "",
+        image_urls: list[str] | None = None,
+    ) -> None:
         """记录机器人自己刚发出去的一条（文本已是可读摘要，含图片/表情包占位）。
 
         去重由上游 `modules.bot_echo.BotEchoLog` 负责：同一条消息会被协议端
         tap 与 after_message_sent 各报一次，这里不再重复判断。
+
+        ``image_urls`` 是这张图/表情包的预览（``data:image/jpeg;base64,...``），
+        让模型在被追问时能真的「看见」自己刚发的是什么。
         """
-        self.observe(group, bot_name, text, role="self", sender_name=bot_name)
+        urls = [str(u) for u in (image_urls or []) if u]
+        deduped = list(dict.fromkeys(urls))[:2]
+        self.observe(
+            group, bot_name, text, deduped, role="self", sender_name=bot_name
+        )
+
+    def update_last_self(
+        self,
+        group: str,
+        *,
+        text: str | None = None,
+        image_urls: list[str] | None = None,
+    ) -> bool:
+        """原地补全最后一条 ``self`` 项（不新增条目）。
+
+        用于双路径上报去重：协议端 tap 先报 ``[图片]``、``after_message_sent``
+        再报 ``[表情包]`` 并带上预览时，把更具体的标签与图片补到同一条上，
+        否则模型会以为「发了一张图片和一个表情包」。
+
+        返回 True 表示确实改动了内容。
+        """
+        key = str(group or "")
+        bucket = self._recent.get(key)
+        if not bucket:
+            return False
+        target: InteractItem | None = None
+        for it in reversed(bucket):
+            if it.is_self():
+                target = it
+                break
+        if target is None:
+            return False
+        changed = False
+        new_text = str(text or "").strip()
+        if new_text:
+            cur = target.text.strip()
+            if not cur or (
+                new_text != cur and _media_rank(new_text) > _media_rank(cur)
+            ):
+                target.text = new_text[:200]
+                changed = True
+        imgs = [str(u) for u in (image_urls or []) if u]
+        if imgs:
+            merged = list(dict.fromkeys([*target.image_urls, *imgs]))[:2]
+            if merged != target.image_urls:
+                target.image_urls = merged
+                changed = True
+        return changed
 
     def recent(
         self,
@@ -189,26 +254,46 @@ class InteractContext:
             self._pending.clear()
 
 
+def _rel_time(delta: float) -> str:
+    """把「距今多少秒」渲染成一眼能懂的中文相对时间。"""
+    d = max(0.0, float(delta or 0.0))
+    if d < 3:
+        return "刚刚"
+    if d < 60:
+        return f"{int(d)}秒前"
+    if d < 3600:
+        return f"{max(1, int(d // 60))}分钟前"
+    if d < 86400:
+        return f"{max(1, int(d // 3600))}小时前"
+    return f"{max(1, int(d // 86400))}天前"
+
+
 def _format_item_line(
     it: InteractItem,
     *,
     me: str,
     trigger: PendingTrigger | None = None,
+    now: float | None = None,
 ) -> str:
-    """把单条 InteractItem 渲染为上下文行（无内容返回空串）。"""
+    """把单条 InteractItem 渲染为上下文行（无内容返回空串）。
+
+    ``now`` 传入时会带上相对时间戳（``[9秒前]``）：没有时间锚点，模型分不清
+    「刚刚发生」和「几小时前的旧对话」，会把旧话题硬套到眼前的短句上。
+    """
     body = it.text.strip()[:200]
     if not body and it.image_urls:
         body = "[图片]"
     if not body:
         return ""
+    stamp = f"[{_rel_time(now - it.at)}] " if now is not None else ""
     if it.is_self():
-        return f"- {me}：{body}"
+        return f"- {stamp}{me}：{body}"
     same = bool(trigger and it.sender and it.sender == trigger.sender)
     if it.sender_name:
         tag = f"{it.sender_name}（同一个人）" if same else it.sender_name
-        return f"- {tag}：{body}"
+        return f"- {stamp}{tag}：{body}"
     prefix = "（同一个人）" if same else ""
-    return f"- {prefix}{body}"
+    return f"- {stamp}{prefix}{body}"
 
 
 def build_prompt(
@@ -248,18 +333,63 @@ def build_prompt(
     return "\n".join(lines), images
 
 
+def collect_recent_self_images(
+    context_items: list[InteractItem],
+    max_images: int = 2,
+) -> list[str]:
+    """收集最近几条 ``self`` 项里的图片预览（最新优先、保序去重）。
+
+    只认 ``data:image/...`` 预览与本地图片路径：远程 URL 交给宿主去下载会拖慢
+    本轮回复，出站 tap 阶段也根本拿不到。
+    """
+    cap = max(1, int(max_images or 2))
+    out: list[str] = []
+    seen: set[str] = set()
+    for it in reversed(list(context_items or [])):
+        if not it.is_self():
+            continue
+        for url in it.image_urls:
+            s = str(url or "").strip()
+            if not s or s in seen:
+                continue
+            if not (s.startswith("data:image/") or _looks_local_image(s)):
+                continue
+            seen.add(s)
+            out.append(s)
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def _looks_local_image(url: str) -> bool:
+    """看起来像本地图片路径（排除远程 URL）。"""
+    low = str(url or "").strip().lower()
+    if not low or low.startswith(("http://", "https://", "//", "data:")):
+        return False
+    return low.endswith(
+        (".gif", ".webp", ".png", ".jpg", ".jpeg", ".bmp", ".apng", ".tif", ".tiff")
+    )
+
+
 def build_recent_echo_block(
     context_items: list[InteractItem],
     *,
     bot_name: str = "",
     current_prompt: str = "",
     max_items: int = 6,
+    now: float | None = None,
+    has_attached_images: bool = False,
 ) -> str:
     """为群聊正常带字 @ 回复拼出「本群刚才的动态」临时块。
 
-    只在窗口里确实有「机器人自己刚发出的消息」（例如表情包制作、入群欢迎、
-    退群通知、主动插话等不进对话历史的内容）时生成；平时没自己发言返回空串，
-    不给常规对话徒增噪音。
+    只在窗口里确实有「机器人自己刚发出的消息」（表情包、插件管线直发、主动
+    插话这类不进对话历史的内容）时生成；平时没自己发言返回空串，不给常规
+    对话徒增噪音。
+
+    注意（实测踩过的坑）：header 里**不要写任何具体场景举例**。早先写了
+    「表情包制作、入群欢迎、退群通知等插件消息不会出现在对话历史里」，低智
+    模型直接把「入群欢迎」当成真发生过的群动态，把群友的 `hyw` 猜成「欢迎我」。
+    这里只讲通用规则，不给它编故事的素材。
     """
     items = list(context_items or [])
     if not any(it.is_self() for it in items):
@@ -274,19 +404,27 @@ def build_recent_echo_block(
         return ""
     me = f"我（{bot_name}）" if bot_name and bot_name != "我" else "我"
     cap = max(2, int(max_items))
+    now_ts = float(now) if now is not None else time.time()
     rendered: list[str] = []
     for it in items[-cap:]:
-        line = _format_item_line(it, me=me)
+        line = _format_item_line(it, me=me, now=now_ts)
         if line:
             rendered.append(line)
     if not rendered:
         return ""
     header = (
-        f"{RECENT_ECHO_MARKER}（供衔接上下文参考，不要复述；标「{me}」的是你刚才"
-        "在群里发出的消息——表情包制作、入群欢迎、退群通知等插件消息不会出现在"
-        "对话历史里，被问起时以此为准，别扯回很久以前的话题）"
+        f"{RECENT_ECHO_MARKER}（下面是刚刚在这个群里发生的最新动态，比上面的历史对话更新；"
+        f"方括号里是距现在多久，标「{me}」的是你自己刚才发出去的消息。"
+        "用户此刻的发言——尤其是短词、缩写、反问或吐槽——优先是在接下面这件事的话，"
+        "就顺着这件事回应，不要硬扯回很久以前的旧对话。"
+        "只把下面这几条当事实，不要凭空补出没发生过的群动态，也不要复述本块。）"
     )
-    return "\n".join([header, *rendered])
+    lines = [header, *rendered]
+    if has_attached_images:
+        lines.append(
+            f"（附带的图片就是上面标「{me}」刚发出去的那张图，直接结合图的内容来回应。）"
+        )
+    return "\n".join(lines)
 
 
 def is_pure_at(messages: list[Any], bot_id: str = "") -> bool:

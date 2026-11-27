@@ -23,11 +23,16 @@
 
 from __future__ import annotations
 
+import base64
 import inspect
+import io
+import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 #: 这些后缀多半是动图/表情包，单独标一下，模型才知道自己发的是表情而不是照片
 _STICKER_SUFFIXES = (".gif", ".webp", ".apng")
@@ -238,6 +243,209 @@ def summarize_onebot_segments(segments: Any, *, max_chars: int = 160) -> str:
     return _join(parts, max_chars)
 
 
+# ---------------------------------------------------------------- 图片预览抽取
+#
+# 为什么要有这一段：机器人自己发出的一张图/表情包，模型只能看到 `[表情包]`
+# 这个干巴巴的占位。群里紧接着问「@bot 这啥」时，模型根本不知道自己发了什么，
+# 只能瞎猜。这里把出站图片抽成一张 512px 的 JPEG 预览（data URL，不落盘），
+# 让模型能真正「看见」自己刚发出去的东西。
+
+#: 单张源图上限；超过就跳过（宁可没有预览，也不要在出站路径上卡住）
+_PREVIEW_MAX_BYTES = 8 * 1024 * 1024
+#: 预览长边、JPEG 质量、一条消息最多带几张
+_PREVIEW_MAX_SIDE = 512
+_PREVIEW_QUALITY = 75
+_PREVIEW_MAX_IMAGES = 2
+
+#: 纯媒体标签的「具体程度」：[表情包] 比 [图片] 更具体，双路径上报时取更具体的那个
+_MEDIA_SPECIFICITY = {"[图片]": 1, "[表情包]": 2}
+
+
+def _media_rank(text: str) -> int:
+    """纯媒体标签的具体程度（0 表示不是图片/表情包占位）。"""
+    return _MEDIA_SPECIFICITY.get(str(text or "").strip(), 0)
+
+
+def _accepts_kw(fn: Any, name: str) -> bool:
+    """目标回调是否接受某个关键字参数（用于向旧调用方/旧单测保持兼容）。"""
+    if fn is None:
+        return False
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for p in sig.parameters.values():
+        if p.kind is inspect.Parameter.VAR_KEYWORD or p.name == name:
+            return True
+    return False
+
+
+def _local_path_of(source: str) -> str:
+    """把 ``file:///...`` 或裸路径转成本地文件路径；远程/空值返回空串。"""
+    s = str(source or "").strip()
+    if not s:
+        return ""
+    low = s.lower()
+    if low.startswith(("http://", "https://", "//")):
+        return ""  # 远程图不拉：出站路径上不能等网络
+    if low.startswith("file:"):
+        try:
+            path = url2pathname(unquote(urlparse(s).path))
+        except Exception:  # noqa: BLE001
+            return ""
+        # Windows 的 file:///E:/x.gif 会被解析成 /E:/x.gif
+        if re.match(r"^[\\/][A-Za-z]:", path):
+            path = path.lstrip("\\/")
+        return path
+    return s
+
+
+def _read_image_bytes(source: str) -> bytes:
+    """把图片源读成原始字节（base64://、data URL、file://、本地路径）。"""
+    s = str(source or "").strip()
+    if not s:
+        return b""
+    low = s.lower()
+    if low.startswith("base64://"):
+        raw = s[len("base64://") :]
+        if len(raw) > _PREVIEW_MAX_BYTES * 4 // 3 + 64:
+            return b""
+        try:
+            return base64.b64decode(raw + "=" * (-len(raw) % 4))
+        except Exception:  # noqa: BLE001
+            return b""
+    if low.startswith("data:"):
+        head, sep, body = s.partition(",")
+        if not sep or ";base64" not in head.lower():
+            return b""
+        if len(body) > _PREVIEW_MAX_BYTES * 4 // 3 + 64:
+            return b""
+        try:
+            return base64.b64decode(body + "=" * (-len(body) % 4))
+        except Exception:  # noqa: BLE001
+            return b""
+    path = _local_path_of(s)
+    if not path:
+        return b""
+    try:
+        if not os.path.isfile(path):
+            return b""
+        if os.path.getsize(path) > _PREVIEW_MAX_BYTES:
+            return b""
+        with open(path, "rb") as f:
+            return f.read(_PREVIEW_MAX_BYTES + 1)
+    except OSError:
+        return b""
+
+
+def extract_preview_data_url(source: str, max_side: int = 512) -> str:
+    """把一张图（GIF/WebP/PNG/JPEG…）压成 ``data:image/jpeg;base64,...`` 预览。
+
+    动图抽一个代表帧（``n_frames // 3``，失败回退第 0 帧），转 RGB 后缩到
+    长边 ``max_side`` 以内。Pillow 缺失、源不可读、解析失败一律静默返回空串：
+    这条路径在消息已经发出去之后跑，绝不能抛异常。
+    """
+    try:
+        raw = _read_image_bytes(source)
+        if not raw or len(raw) > _PREVIEW_MAX_BYTES:
+            return ""
+        from PIL import Image  # 延迟导入：没装 Pillow 就自然降级
+
+        limit = max(64, int(max_side or _PREVIEW_MAX_SIDE))
+        with Image.open(io.BytesIO(raw)) as img:
+            frames = int(getattr(img, "n_frames", 1) or 1)
+            if frames > 1:
+                try:
+                    img.seek(frames // 3)
+                except Exception:  # noqa: BLE001 - 抽帧失败就退回第 0 帧
+                    try:
+                        img.seek(0)
+                    except Exception:  # noqa: BLE001
+                        return ""
+            frame = img.convert("RGB")
+            frame.thumbnail((limit, limit))
+            buf = io.BytesIO()
+            frame.save(buf, format="JPEG", quality=_PREVIEW_QUALITY)
+        data = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{data}" if data else ""
+    except Exception:  # noqa: BLE001 - 预览只是加分项，失败就当没有
+        return ""
+
+
+def extract_image_previews(sources: Any, *, max_images: int = _PREVIEW_MAX_IMAGES) -> list[str]:
+    """把若干图片源转成预览 data URL（保序去重、最多 ``max_images`` 张）。"""
+    cap = max(1, int(max_images or _PREVIEW_MAX_IMAGES))
+    out: list[str] = []
+    seen: set[str] = set()
+    for src in list(sources or []):
+        if len(out) >= cap:
+            break
+        s = str(src or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        preview = extract_preview_data_url(s)
+        if preview:
+            out.append(preview)
+    return out
+
+
+def extract_onebot_image_sources(segments: Any) -> list[str]:
+    """从 OneBot v11 出站消息里抽出图片源（file/url/path，含 CQ 码与合并转发）。"""
+    if segments is None:
+        return []
+    if isinstance(segments, str):
+        out: list[str] = []
+        for match in _CQ_CODE_RE.finditer(segments):
+            if str(match.group(1) or "").lower() != "image":
+                continue
+            params = _parse_cq_params(str(match.group(2) or ""))
+            src = params.get("file") or params.get("url") or ""
+            if src:
+                out.append(src)
+        return out
+    if isinstance(segments, dict):
+        seg_list: list[Any] = [segments]
+    else:
+        try:
+            seg_list = list(segments)
+        except TypeError:
+            return []
+    out = []
+    for seg in seg_list:
+        if isinstance(seg, str):
+            out.extend(extract_onebot_image_sources(seg))
+            continue
+        if not isinstance(seg, dict):
+            continue
+        stype = str(seg.get("type") or "")
+        data = seg.get("data") if isinstance(seg.get("data"), dict) else {}
+        data = data or {}
+        if stype == "image":
+            src = str(data.get("file") or data.get("url") or data.get("path") or "")
+            if src:
+                out.append(src)
+        elif stype in ("node", "nodes", "forward"):
+            content = data.get("content") or data.get("messages")
+            if content:
+                out.extend(extract_onebot_image_sources(content))
+    return out
+
+
+def extract_component_image_sources(chain: Any) -> list[str]:
+    """从 AstrBot 组件链里抽出图片源（优先本地 path/file，其次远程 url）。"""
+    out: list[str] = []
+    for comp in list(chain or []):
+        if type(comp).__name__ != "Image":
+            continue
+        for attr in ("path", "file", "url"):
+            val = str(getattr(comp, attr, "") or "").strip()
+            if val:
+                out.append(val)
+                break
+    return out
+
+
 @dataclass
 class _Echo:
     """上一次为某个群记录的内容，用来去重。"""
@@ -245,6 +453,8 @@ class _Echo:
     text: str = ""
     at: float = 0.0
     media: bool = False
+    #: 图片预览（data:image/jpeg;base64,...），最多 2 张
+    images: list[str] = field(default_factory=list)
 
 
 class BotEchoLog:
@@ -252,34 +462,89 @@ class BotEchoLog:
 
     两条捕获路径（协议端 tap、after_message_sent）会各自报一次同一条消息，
     所以去重放在这里做，调用方不必关心是谁报的。
+
+    坑（实测踩过）：同一条 GIF 表情包发送，``BotSendTap`` 报成 ``[表情包]``、
+    ``after_message_sent`` 报成 ``[图片]``，只按文本相等去重会留下两条，
+    模型于是以为「发了一张图片和一个表情包」。因此这里对「同为纯媒体、
+    且都属于图片/表情包系」的两次上报做合并，取更具体的标签（[表情包] >
+    [图片]），并把后到的图片预览补到同一条上（通过 ``on_update`` 通知下游）。
     """
 
     def __init__(
         self,
-        on_record: Callable[[str, str], None] | None = None,
+        on_record: Callable[..., None] | None = None,
         *,
+        on_update: Callable[..., None] | None = None,
         dedupe_window: float = 2.5,
         media_merge_window: float = 8.0,
         max_chars: int = 160,
     ) -> None:
         self._on_record = on_record
+        self._on_update = on_update
+        self._record_accepts_images = _accepts_kw(on_record, "images")
+        self._update_accepts_images = _accepts_kw(on_update, "images")
         self._dedupe_window = max(0.0, float(dedupe_window))
         self._media_merge_window = max(0.0, float(media_merge_window))
         self._max_chars = max(20, int(max_chars))
         self._last: dict[str, _Echo] = {}
 
-    def record(self, group: str, text: str, *, media: bool = False) -> bool:
+    # ---- 回调（老调用方只吃 (group, text)，所以按签名探测再决定带不带 images） ----
+    def _emit_record(self, gid: str, text: str, images: list[str]) -> None:
+        if self._on_record is None:
+            return
+        try:
+            if self._record_accepts_images:
+                self._on_record(gid, text, images=list(images))
+            else:
+                self._on_record(gid, text)
+        except Exception:  # noqa: BLE001 - 记账失败不该影响消息已经发出的事实
+            pass
+
+    def _emit_update(self, gid: str, text: str, images: list[str]) -> None:
+        if self._on_update is None:
+            return
+        try:
+            if self._update_accepts_images:
+                self._on_update(gid, text, images=list(images))
+            else:
+                self._on_update(gid, text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def record(
+        self,
+        group: str,
+        text: str,
+        *,
+        media: bool = False,
+        images: list[str] | None = None,
+    ) -> bool:
         """登记一条机器人发言。返回 True 表示确实收下了（未被去重/丢弃）。"""
         gid = str(group or "").strip()
         body = _join([str(text or "")], self._max_chars)
         if not gid or not body:
             return False
+        imgs = list(dict.fromkeys(str(u) for u in (images or []) if u))[:2]
         now = time.time()
         prev = self._last.get(gid)
-        if prev is not None:
+        if prev is not None and now - prev.at <= self._dedupe_window:
             # 同一条消息被两条捕获路径各报一次（间隔毫秒级）
-            if prev.text == body and now - prev.at <= self._dedupe_window:
+            if prev.text == body:
+                # 后到的那条补上了图片预览 → 原地补全，不新增条目
+                if imgs and not prev.images:
+                    prev.images = imgs
+                    self._emit_update(gid, prev.text, prev.images)
                 return False
+            # 同一条发送被两条路径分别识别成 [图片] / [表情包] → 合并成一条
+            if media and prev.media and _media_rank(prev.text) and _media_rank(body):
+                merged = body if _media_rank(body) > _media_rank(prev.text) else prev.text
+                merged_imgs = prev.images or imgs
+                if merged != prev.text or (imgs and not prev.images):
+                    prev.text = merged
+                    prev.images = merged_imgs
+                    self._emit_update(gid, prev.text, prev.images)
+                return False
+        if prev is not None:
             # 连发同样的图/表情包（刷屏），合并成一条，别把上下文挤爆
             if (
                 media
@@ -288,17 +553,17 @@ class BotEchoLog:
                 and now - prev.at <= self._media_merge_window
             ):
                 return False
-        self._last[gid] = _Echo(text=body, at=now, media=bool(media))
-        if self._on_record is not None:
-            try:
-                self._on_record(gid, body)
-            except Exception:  # noqa: BLE001 - 记账失败不该影响消息已经发出的事实
-                pass
+        self._last[gid] = _Echo(text=body, at=now, media=bool(media), images=imgs)
+        self._emit_record(gid, body, imgs)
         return True
 
     def last(self, group: str) -> str:
         """最近一条已登记的发言（面板/调试用）。"""
         return self._last.get(str(group or "").strip(), _Echo()).text
+
+    def last_images(self, group: str) -> list[str]:
+        """最近一条已登记发言附带的图片预览（面板/调试用）。"""
+        return list(self._last.get(str(group or "").strip(), _Echo()).images)
 
 
 class BotSendTap:
@@ -319,6 +584,7 @@ class BotSendTap:
     def __init__(self, on_group_message: Callable[..., Any]) -> None:
         self._on_group_message = on_group_message
         self._accepts_media = self._check_accepts_media(on_group_message)
+        self._accepts_images = _accepts_kw(on_group_message, "images")
         # key = id(target), value = (target, orig, had_instance_attr)
         self._installed: dict[int, tuple[Any, Any, bool]] = {}
 
@@ -448,15 +714,28 @@ class BotSendTap:
             text = "[合并转发]"
         if not text:
             return
-        if self._accepts_media:
-            self._on_group_message(str(group), text, media=is_media_only_summary(text))
-        else:
+        if not self._accepts_media:
             self._on_group_message(str(group), text)
+            return
+        media = is_media_only_summary(text)
+        if not self._accepts_images:
+            self._on_group_message(str(group), text, media=media)
+            return
+        images: list[str] = []
+        # 先快筛：出站消息里压根没有图片段时不做任何解码
+        sources = extract_onebot_image_sources(payload)
+        if sources:
+            images = extract_image_previews(sources)
+        self._on_group_message(str(group), text, media=media, images=images)
 
 
 __all__ = [
     "BotEchoLog",
     "BotSendTap",
+    "extract_component_image_sources",
+    "extract_image_previews",
+    "extract_onebot_image_sources",
+    "extract_preview_data_url",
     "is_media_only_summary",
     "summarize_components",
     "summarize_onebot_segments",

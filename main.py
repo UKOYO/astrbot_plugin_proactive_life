@@ -112,7 +112,7 @@ class _LiveConfig:
     "astrbot_plugin_proactive_life",
     "keyou",
     "自主生活与主动中枢",
-    "1.5.3",
+    "1.5.9",
     "一体化活人感中枢：贯通入站准入、主动生活、天气穿搭日程、人物情绪与群黑话感知、出站清洗与真人节奏",
 )
 class ProactiveLifePlugin(Star, RhythmMixin):
@@ -158,7 +158,10 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         # 否则别的插件走管线发过表情包/欢迎语之后被戳，模型完全不知情。
         from .modules.bot_echo import BotEchoLog, BotSendTap
 
-        self.bot_echo = BotEchoLog(on_record=self._collect_self_speech)
+        self.bot_echo = BotEchoLog(
+            on_record=self._collect_self_speech,
+            on_update=self._update_self_speech,
+        )
         self.bot_echo_tap = BotSendTap(self.bot_echo.record)
         # 主动私聊/追问目标过滤：黑名单命中则跳过。
         # 注意：这里必须在 lambda 内部实时读配置，否则面板开关不会生效。
@@ -221,7 +224,9 @@ class ProactiveLifePlugin(Star, RhythmMixin):
 
         return module_enabled(self.cfg, name)
 
-    def _collect_self_speech(self, group: str, text: str) -> None:
+    def _collect_self_speech(
+        self, group: str, text: str, images: list[str] | None = None
+    ) -> None:
         """把机器人刚发出的一条（已去重）收进戳/艾特上下文，标记为自己说的。"""
         if not group or not str(text or "").strip():
             return
@@ -236,7 +241,29 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             bot_name = self.group_h._bot_name()
         except Exception:  # noqa: BLE001
             bot_name = ""
-        ctx.observe_self(group, text, bot_name=bot_name)
+        ctx.observe_self(group, text, bot_name=bot_name, image_urls=images)
+
+    def _update_self_speech(
+        self, group: str, text: str, images: list[str] | None = None
+    ) -> None:
+        """双路径去重合并后，把更具体的标签 / 图片预览补到同一条自我发言上。
+
+        否则同一条 GIF 表情包会被记成「发了一张图片」+「发了一个表情包」两条，
+        模型接话时会以为自己连发了两条。
+        """
+        if not group or not str(text or "").strip():
+            return
+        if not self._module_on("戳一戳"):
+            return
+        if not bool(self.cfg.get("戳一戳_收录自己发言", True)):
+            return
+        ctx = getattr(self, "interact_ctx", None)
+        if ctx is None:
+            return
+        try:
+            ctx.update_last_self(group, text=text, image_urls=images)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 补全自我发言失败: %s", e)
 
     def _ensure_echo_tap(self, event: AstrMessageEvent | None = None) -> None:
         """确保协议端出站 tap 已挂上（平台热插拔时不至于漏采自己说的话）。"""
@@ -556,22 +583,26 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         if self._stop_event.is_set():  # 重载残留的旧实例 handler，直接空转
             return
         try:
+            # 当前会话真实模型名（说话方式避坑用）与支持的模态（图片注入安全阀用）
+            model_name = ""
+            provider_modalities = None
+            try:
+                from .common import get_chat_provider
+
+                umo = str(getattr(event, "unified_msg_origin", "") or "")
+                prov = get_chat_provider(self.context, umo or None)
+                if prov is not None:
+                    model_name = str(prov.get_model() or "")
+                    _pcfg = getattr(prov, "provider_config", None)
+                    if hasattr(_pcfg, "get"):
+                        provider_modalities = _pcfg.get("modalities", None)
+            except Exception:  # noqa: BLE001
+                pass
+
             # 说话方式硬约束：低智模型容易退化成解说员，放在临时块最前面
             try:
                 from .life_inject import inject_temp_part
                 from .modules.speech_style import MARKER as SPEECH_MARKER, speech_style_block
-
-                # 取当前会话真实模型名，用于追加一句针对性避坑
-                model_name = ""
-                try:
-                    from .common import get_chat_provider
-
-                    umo = str(getattr(event, "unified_msg_origin", "") or "")
-                    prov = get_chat_provider(self.context, umo or None)
-                    if prov is not None:
-                        model_name = str(prov.get_model() or "")
-                except Exception:  # noqa: BLE001
-                    pass
 
                 style = speech_style_block(self.cfg, model_name)
                 if style:
@@ -632,17 +663,10 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             except Exception as e:  # noqa: BLE001
                 logger.debug("proactive_life | 人物档案注入失败: %s", e)
 
-            block = build_life_state_block(
-                self.cfg, mood=getattr(self, "mood", None),
-                motive=motive_hint, session_key=session_key,
-                person=person_block,
-            )
-            if block and inject_life_state(req, block):
-                logger.debug("proactive_life | 已注入当前生活状态（%d 字）", len(block))
-
-            # 群聊带字 @ 兜底：若刚才通过表情包制作、入群欢迎、退群通知等插件管线
-            # 发过消息，这些消息不进 conversation.history；把近期动态临时注给模型，
-            # 避免有人 @ 追问时对着很久以前的旧历史没头没尾乱回。
+            # 群聊带字 @ 兜底（**必须排在【当前生活状态】之前**）：
+            # 刚在群里发生的事比「今天穿什么/现在做什么」和几小时前的旧历史都更新，
+            # 越靠近用户当前消息，模型越会拿它当接话依据。这些消息不进
+            # conversation.history（表情包/插件管线直发），只能靠这里临时补给。
             # （戳一戳 / 纯艾特已通过 build_prompt 带过上下文，靠 _poke_trigger 跳过）
             try:
                 is_group = not bool(event.is_private_chat())
@@ -657,10 +681,11 @@ class ProactiveLifePlugin(Star, RhythmMixin):
                     and self._module_on("戳一戳")
                     and bool(self.cfg.get("戳一戳_收录自己发言", True))
                 ):
-                    from .life_inject import inject_temp_part
+                    from .life_inject import inject_temp_images, inject_temp_part
                     from .modules.interact_context import (
                         RECENT_ECHO_MARKER,
                         build_recent_echo_block,
+                        collect_recent_self_images,
                     )
 
                     items = ctx.recent(gid_echo)
@@ -673,18 +698,45 @@ class ProactiveLifePlugin(Star, RhythmMixin):
                         bname = self.group_h._bot_name()
                     except Exception:  # noqa: BLE001
                         bname = ""
+                    # 自己刚发的图：让模型真的「看见」那张表情包，而不是只看到 [表情包]
+                    # 纯文本模型直接跳过，避免文案里写了「附带的图片」却没真附上去
+                    supports_image = not (
+                        isinstance(provider_modalities, list)
+                        and provider_modalities
+                        and "image" not in provider_modalities
+                    )
+                    self_images = (
+                        collect_recent_self_images(items) if supports_image else []
+                    )
                     echo_block = build_recent_echo_block(
                         items,
                         bot_name=bname,
                         current_prompt=cur_prompt,
+                        has_attached_images=bool(self_images),
                     )
                     if echo_block and inject_temp_part(req, echo_block, RECENT_ECHO_MARKER):
                         logger.debug(
                             "proactive_life | 已注入本群刚才的动态（%d 字）",
                             len(echo_block),
                         )
+                        if self_images:
+                            injected = inject_temp_images(
+                                req, self_images, modalities=provider_modalities
+                            )
+                            if injected:
+                                logger.debug(
+                                    "proactive_life | 已注入自己刚发的 %d 张图", injected
+                                )
             except Exception as e:  # noqa: BLE001
                 logger.debug("proactive_life | 群近期动态注入失败，本次跳过: %s", e)
+
+            block = build_life_state_block(
+                self.cfg, mood=getattr(self, "mood", None),
+                motive=motive_hint, session_key=session_key,
+                person=person_block,
+            )
+            if block and inject_life_state(req, block):
+                logger.debug("proactive_life | 已注入当前生活状态（%d 字）", len(block))
         except Exception as e:  # noqa: BLE001 - 注入失败不能影响正常回复
             logger.debug(f"proactive_life | 生活状态注入异常，本次跳过: {e}")
 
@@ -732,7 +784,11 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             txt = str(plain or "").strip()
             # 图/表情包这类没有正文本的结果也要留个可读摘要，否则模型
             # 不知道自己刚发过图（表情包制作就是这条路径）
-            from .modules.bot_echo import summarize_components
+            from .modules.bot_echo import (
+                extract_component_image_sources,
+                extract_image_previews,
+                summarize_components,
+            )
 
             summary = summarize_components(chain) if chain else txt
 
@@ -746,7 +802,9 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             gid = str(event.get_group_id() or "")
             echo = getattr(self, "bot_echo", None)
             if echo is not None and gid and summary:
-                echo.record(gid, summary, media=not txt)
+                # 图片预览：让模型在被追问时能看见自己刚发的那张图（最多 2 张）
+                images = extract_image_previews(extract_component_image_sources(chain)) if chain else []
+                echo.record(gid, summary, media=not txt, images=images)
             if not self._module_on("群聊") or not txt:
                 return
             # 记录群聊发言，激活接话时间窗口
