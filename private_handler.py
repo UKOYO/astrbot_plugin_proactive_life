@@ -19,38 +19,33 @@ from astrbot.core.platform.message_session import MessageSession
 from .common import parse_quiet_hours
 from .handler_base import HandlerContextMixin
 from .agent_runner import (
-    build_agent_config, make_request, attach_history, run_agent,
+    build_agent_config, make_request, attach_history, run_agent, max_steps_from,
 )
 
 _WAKE_PROMPT = """【时间与情境】
 - 当前时间：{now_str}（{period_desc}）
 - {user_name}约 {silent_min} 分钟没说话了，你手头正好有点空。
-{persona_block}{mood_hint}
-【核心开口动机与背景（关键引导）】
+{mood_hint}
+【这次的开口动机与背景】
 {motive_instruction}
 
-【开口规范（杜绝汇报腔与新闻早报）】
-1. 像真人随手在手机上打字：
-   - 随性、口语、短碎，说完就停。严禁输出「我在哪+在做什么+在忙什么+问对方在干嘛」这种三段式近况汇报！
-   - 严禁把私聊当成新闻早报！绝对禁止机械套用「说起来 刚才搜了/刷到了...」这种格式搬运资讯；
-   - 生活碎念远比搬运二手新闻更自然。
-2. 聊具体的事，有明确目的感与真实体感：
-   - 如果有【心事/话题】，必须像真人随口聊天一样自然提及，严禁背新闻稿，若觉得太生硬可直接放弃改聊日常；
-   - 优先聊当下真实的生理与生活体感（刚醒开机困难、纠结吃什么、外卖慢了、房间有点冷、工作或游戏卡住）；
-   - 也可以单纯随手戳他一下、甩个吐槽或小牢骚。
-3. 纯第一人称台词，严禁动作括号内心戏，绝不解释为什么发消息。"""
+【开口规范（只管说什么，怎么写由你自己的人设决定）】
+1. 别写成近况汇报（我在哪 + 在做什么 + 在忙什么 + 反问对方在干嘛），也别把私聊当成新闻早报、资讯搬运。
+2. 聊具体的事，有真实体感：优先当下的生理与生活状态（刚醒、纠结吃什么、外卖慢了、手头的事卡住）；
+   有【心事/话题】就自然带一句，觉得生硬就不提，改聊日常。
+3. 以第一人称说话，不解释自己为什么发消息。"""
 
 _NUDGE_PROMPT = """【时间与情境】
 - 当前时间：{now_str}（{period_desc}）
 - 刚才你在私聊里对{user_name}说了/抛出了下面的话题或提问，但已经约 {elapsed_min} 分钟没有回复了，对话卡在这儿。
-{persona_block}{mood_hint}
+{mood_hint}
 【刚才你的发言/抛出的问题】
 「{question}」
 
-【追问动机与要求】
-1. 你心里挂念着刚才的话题，或者被放置了一会儿，有点小情绪、傲娇，好奇他怎么卡住了；
-2. 像情侣日常闲聊一样，顺着刚才没答完的话题自然追问一句、戳他一下（比如「人呢，真卡壳了？」「快说，到底选哪个」「装死是吧」「怎么突然不吱声了」）；
-3. 像真人单手在手机九宫格摸鱼打字：短碎、口语、随性，说完就停，严禁机械长篇大论，纯第一人称台词，严禁动作括号内心戏，绝不解释为什么发消息。"""
+【追问要求】
+1. 你心里还挂着刚才那个话题，被放置了一会儿，多少有点在意；语气完全按你自己的人设来，不要自己加设定；
+2. 顺着刚才没答完的话题自然追问一句、问一下{user_name}就行，别写成催债；
+3. 以第一人称说话，不解释自己为什么发消息。"""
 
 # 当前活动关键词 -> 可聊的方向（日程驱动，只作为建议）
 _ACTIVITY_TOPICS = (
@@ -65,13 +60,15 @@ _ACTIVITY_TOPICS = (
 )
 
 # 没心事可用时的内置开口动机（避免每次都是同一句「摸鱼发呆」）
+# 全部中性、去性别化：具体关系与语气交给已加载的人设（persona_block），
+# 不在这里写死「他 / 情侣 / 傲娇」之类的设定。
 _BUILTIN_MOTIVES = (
-    ("想念", "隔了一阵没说话，忽然有点想他，想随便戳他一下。"),
+    ("想念", "隔了一阵没说话，忽然有点想找对方聊两句，想随口戳一下。"),
     ("无聊", "手头正好没事，闲得有点发慌，想找个人说句话。"),
     ("报备", "刚做完一件小事（刚吃完/刚收拾完/刚洗完澡），想随口说一声。"),
     ("分享", "刚碰到一件有意思的小事，想随口吐槽一句。"),
-    ("小情绪", "想起他上次说的某句话，还有点在意，想提一嘴。"),
-    ("关心", "不知道他这会儿在干嘛、吃没吃饭，有点想问一句。"),
+    ("小情绪", "想起上次聊天里的某句话，还有点在意，想提一嘴。"),
+    ("关心", "不知道对方这会儿在干嘛、吃没吃饭，有点想问一句。"),
 )
 
 
@@ -81,6 +78,11 @@ def _quiet_hours(raw) -> list[int]:
 
 
 def _period_desc(now: datetime) -> str:
+    """时段描述。
+
+    只描述「这个时段通常会发生什么」，不写死任何具体爱好/关系设定
+    （以前这里是「打游戏推Gal/看番」，换成别的人设就串戏）。
+    """
     h = now.hour
     w = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
     if 5 <= h < 9:
@@ -94,7 +96,7 @@ def _period_desc(now: datetime) -> str:
     if 17 <= h < 19:
         return f"{w}傍晚（快下班/晚高峰/觅食途中）"
     if 19 <= h < 23:
-        return f"{w}晚间（自由活动/洗漱/打游戏推Gal/看番）"
+        return f"{w}晚间（自由活动/洗漱/刷手机/看剧）"
     return f"{w}深夜（夜猫子冲浪/熬夜修仙/该睡没睡）"
 
 
@@ -107,13 +109,6 @@ def _split_message(text: str, target: int = 45, max_segments: int = 5) -> list[s
     from .rhythm_trimmer import split_message
 
     return split_message(text, target=target, max_segments=max_segments)
-
-def _strip_trailing_punct(text: str) -> str:
-    out = text.rstrip()
-    while out and out[-1] in "。！!.":
-        out = out[:-1].rstrip()
-    return out
-
 
 def _clean_spoken_text(text: str) -> str:
     t = re.sub(r"```[\s\S]*?```", "", text)
@@ -288,15 +283,10 @@ class PrivateProactiveHandler(HandlerContextMixin):
             logger.info("proactive_life | 记录待追问话题 -> %s: %s", uid_str, clean_txt[:50])
 
     def _resolve_umo(self, uid: str) -> str:
-        try:
-            for inst in self.context.platform_manager.get_insts():
-                meta = getattr(inst, "metadata", None)
-                pid = getattr(meta, "id", None) if meta else None
-                if pid:
-                    return f"{pid}:FriendMessage:{uid}"
-        except (OSError, AttributeError, TypeError) as e:
-            logger.debug("proactive_life | 平台实例读取失败，回退默认 UMO: %s", e)
-        return f"aiocqhttp:FriendMessage:{uid}"
+        """私聊会话 UMO：平台 id 从运行时取，取不到才回落默认适配器。"""
+        from .common import resolve_umo
+
+        return resolve_umo(self.context, "FriendMessage", uid)
 
     def _read_schedule(self) -> str:
         """读取日程并提炼当前生活状态，供开口参考（只读取，不生成）。"""
@@ -309,6 +299,9 @@ class PrivateProactiveHandler(HandlerContextMixin):
             if not info.get("schedule"):
                 return ""
             bits = []
+            appearance = str(self.cfg.get("日程_外观锚点", "") or "").strip()
+            if appearance:
+                bits.append(f"固定外观（不随穿搭变化）：{appearance}")
             if info.get("outfit"):
                 bits.append(f"今日穿搭：{info['outfit']}")
             if info.get("current_activity"):
@@ -369,7 +362,12 @@ class PrivateProactiveHandler(HandlerContextMixin):
             await attach_history(self.context, req, umo)
             outcome = await run_agent(
                 self.context, ev, req,
-                build_cfg=build_cfg, max_steps=15, total_timeout=240,
+                build_cfg=build_cfg,
+                # 主动开口是「说一句话」，不是干活：步数压到 5 足够，
+                # 每多一步就多一次模型调用（含工具往返），日常没必要。
+                max_steps=max_steps_from(self.cfg, "主动_最大步数", 5),
+                total_timeout=240,
+                clean_cfg=self.cfg,
             )
             if not outcome.ok:
                 logger.debug("proactive_life | 私聊主动未得到有效回复：%s", outcome.reason)
@@ -385,6 +383,10 @@ class PrivateProactiveHandler(HandlerContextMixin):
             except (TypeError, ValueError):
                 delay = 1.2
 
+            # 统一走 rhythm_trimmer 的清理：连逗号/顿号/分号一起清，
+            # 不只清最后一段——中间段留个「，」最像机器。
+            from .rhythm_trimmer import human_pause, strip_trailing_punct
+
             if simulate_typing:
                 # 与面板「节奏」配置保持一致，不再用写死的 26/4
                 try:
@@ -395,15 +397,19 @@ class PrivateProactiveHandler(HandlerContextMixin):
                 segs = _split_message(text, target=target, max_segments=max_seg)
                 if not segs:
                     segs = [text]
+
                 for idx, seg in enumerate(segs):
-                    if idx == len(segs) - 1:
-                        seg = _strip_trailing_punct(seg)
+                    seg, _n = strip_trailing_punct(seg)
+                    if not seg:
+                        continue
                     await self.context.send_message(session, MessageChain([Plain(seg)]))
                     if idx < len(segs) - 1 and delay > 0:
-                        await asyncio.sleep(delay)
+                        # 按下一段的字数决定打多久：短句快、长句慢，更像真人在敲
+                        await asyncio.sleep(human_pause(delay, segs[idx + 1]))
             else:
+                clean, _n = strip_trailing_punct(text)
                 await self.context.send_message(
-                    session, MessageChain([Plain(_strip_trailing_punct(text))])
+                    session, MessageChain([Plain(clean or text)])
                 )
 
             # 同步写进 conversation 上下文历史
@@ -503,7 +509,6 @@ class PrivateProactiveHandler(HandlerContextMixin):
             question=question,
             mood_hint=self._mood_hint(uid),
             user_name=self._user_name(),
-            persona_block=self._persona_field(),
         )
 
         ok = await self._execute_proactive_agent(uid, prompt_text, source="proactive_nudge")
@@ -617,7 +622,6 @@ class PrivateProactiveHandler(HandlerContextMixin):
             motive_instruction=motive_instruction,
             mood_hint=self._mood_hint(uid),
             user_name=self._user_name(),
-            persona_block=self._persona_field(),
         )
 
         ok = await self._execute_proactive_agent(uid, prompt_text, source="proactive_life")
@@ -625,7 +629,9 @@ class PrivateProactiveHandler(HandlerContextMixin):
             ts = time.time()
             self.state["last_active"][uid] = ts
             self.state["daily"][uid] = {"date": today, "count": count + 1}
-            self._save_state()
+            # 强落盘：冷却/每日上限都靠这两个字段。走节流的话，进程重启或
+            # 面板刚看完状态时会读到旧值，可能刚说完又立刻开口一次。
+            self._save_state(force=True)
             if candidate_motive and self.motive_mgr:
                 self.motive_mgr.mark_private_used(candidate_motive["id"])
             logger.info("proactive_life | 私聊主动开口成功 -> %s", uid)

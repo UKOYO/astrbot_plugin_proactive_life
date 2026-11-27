@@ -30,24 +30,41 @@ _HUMAN = """【像个人】你是有自己日子的独立个体，不是待命�
 
 _GENTLE = """【像个人】日常闲聊像朋友随口说，别当助手（写代码、排障或需要详细展开时正常输出，不受短句限制）。
 - 不吹捧、不寒暄、闲聊不分点、不反问留客。
+- 不强行结案（「行，那改天再说」），不用短剧金句甩尾（「……，省事/体面/痛快」）。
 - 可以不知道、可以敷衍、可以不同意；累就短一点，不必每句都热情。
 - 不用每轮都总结或升华，聊完就停。"""
 
-# 按模型追加的精准避坑（只加一句）
-_MODEL_HINTS: list[tuple[tuple[str, ...], str]] = [
+# ---- 过程旁白治理：低参数量模型的高发毛病是把「自己在干什么」写进正文，
+#      读起来像解说员。提生活琐事不算旁白，报工具/任务进度才算。
+_NARRATION = """- 不报流程：不写「我先看看」「我去查一下」「我这就去改」「已经处理好了」这类动作旁白；工具、检索、读写文件的过程一个字都不提，直接给结果或反应。提自己生活里的事（在吃什么、在看什么）不算旁白。"""
+
+# 按模型家族精准止痒：只给 1~2 句盯住该家族真正的口癖。
+# 泛泛写一堆「不许像 AI」对模型几乎无效，反而占注意力。
+_FAMILY_HINTS: list[tuple[tuple[str, ...], str]] = [
     (
         ("deepseek",),
-        "- 你不用「不是…而是…」句式，不用破折号，不堆短句排比；说完就停，不要升华。",
+        "- 别写「不是…而是…」的二元排比，别用破折号，结尾不要点题升华；说完就停。",
     ),
     (
-        ("gemini", "gpt", "openai", "chatgpt", "o1", "o3", "o4"),
-        "- 单句直说：避免翻译腔长句，不要分点排版，不要在末尾反问。",
+        ("gpt", "openai", "chatgpt", "o1", "o3", "o4"),
+        "- 开场别用「您好 / 当然可以 / 很高兴」，正文别自动分点，句尾别抛反问留客。",
+    ),
+    (
+        ("gemini", "gemma"),
+        "- 不要客服式寒暄，别写「以上 / 希望有帮助」，别用列表排版，句尾不要反问。",
     ),
     (
         ("claude", "sonnet", "opus", "haiku"),
-        "- 大白话直说：不写文学比喻、不写心理与环境描写、不说教。",
+        "- 别讲道理、别突然写比喻抒情，直接说人话，说完就停。",
     ),
 ]
+
+# 小模型通用补充（长度与节奏）
+_LITE_MARKERS = (
+    "lite", "mini", "flash", "nano", "small", "tiny", "instant", "turbo",
+    "7b", "8b", "9b", "13b", "14b", "32b", "haiku",
+)
+_LITE_HINT = "- 一两句说完：不宣布打算、不汇报进度、不分点、不反问。"
 
 
 def _clamp(v: Any, default: int = 50) -> int:
@@ -80,13 +97,18 @@ def _willingness_directive(cfg: Any) -> str:
 
 
 def _model_hint(model_name: str) -> str:
+    """按模型家族给最多两句精准禁令（家族 + 小模型补充）。"""
     name = str(model_name or "").strip().lower()
     if not name:
         return ""
-    for keys, hint in _MODEL_HINTS:
+    hints: list[str] = []
+    for keys, hint in _FAMILY_HINTS:
         if any(k in name for k in keys):
-            return hint
-    return ""
+            hints.append(hint)
+            break
+    if any(k in name for k in _LITE_MARKERS):
+        hints.append(_LITE_HINT)
+    return "\n".join(hints[:2])
 
 
 def speech_style_block(cfg: Any, model_name: str = "") -> str:
@@ -99,20 +121,41 @@ def speech_style_block(cfg: Any, model_name: str = "") -> str:
     try:
         if not bool(cfg.get("拟人_说话方式约束", True)):
             return ""
-        mode = str(cfg.get("拟人_说话方式强度", "strict") or "strict").strip().lower()
+        # 默认温和档：插件只压客服/百科/总结八股，句式长度与标点交还给人设
+        mode = str(cfg.get("拟人_说话方式强度", "gentle") or "gentle").strip().lower()
 
         if mode == "gentle":
-            parts = [_GENTLE, _length_directive(cfg)]
+            parts = [_GENTLE, _NARRATION, _length_directive(cfg)]
         else:
             parts = [
                 _ANTI_BAGU,
+                _NARRATION,
                 _HUMAN,
                 _length_directive(cfg),
                 _willingness_directive(cfg),
             ]
-            hint = _model_hint(model_name)
-            if hint:
-                parts.append(hint)
+        hint = _model_hint(model_name)
+        if hint:
+            parts.append(hint)
+
+        # 正样本 > 负面清单：给两三条真实口语切片当锚点，
+        # 模型顺着语感接比读十条禁令有效（默认空，配了才注入）。
+        anchors: list[str] = []
+        try:
+            raw_anchors = cfg.get("拟人_口语锚点", []) or []
+            if isinstance(raw_anchors, str):
+                raw_anchors = [x for x in raw_anchors.splitlines()]
+            for item in list(raw_anchors)[:3]:
+                text = str(item or "").strip()
+                if text:
+                    anchors.append(text[:40])
+        except Exception:
+            anchors = []
+        if anchors:
+            parts.append(
+                "【这样说最像】（照这个语感接，内容不必照抄）\n"
+                + "\n".join(f"- 「{a}」" for a in anchors)
+            )
 
         extra = str(cfg.get("拟人_说话方式补充", "") or "").strip()
         if extra:

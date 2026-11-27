@@ -53,6 +53,7 @@ DEFAULT_PROMPT_TEMPLATE = """# Role: Life Scheduler
 ## Context
 - 日期：{date_str} {weekday} {holiday}
 - 人设：{persona_desc}
+- 固定外观（不可改写）：{appearance}
 
 ## 今日创意约束（必须遵循）
 - 今日主题：【{daily_theme}】
@@ -72,6 +73,7 @@ DEFAULT_PROMPT_TEMPLATE = """# Role: Life Scheduler
 - 你必须只输出 JSON 对象本体（不要 Markdown/代码块/解释）。
 - JSON 必须包含字段 "outfit_style"，且其值必须严格等于 "{outfit_style}"。
 - 字段 "outfit" 的第一行必须以 "风格：{outfit_style}" 开头。
+{appearance_rule}
 
 ## Tasks
 1. outfit: 今日穿搭描述（从里到外、从上到下、衣裤内衣裤鞋袜、饰品等，符合天气和心情）
@@ -101,6 +103,13 @@ _STYLE_PREFIX_RE = re.compile(
 )
 _VAR_RE = re.compile(r"\{(\w+)\}")
 
+# 配置了「日程_外观锚点」时才追加的硬约束：穿搭只换衣服，外观不许被改写。
+_APPEARANCE_RULE = (
+    "- 固定外观是硬约束：outfit 只描述服装、鞋袜、饰品，"
+    "不得改写发色、瞳色、脸型、体型等固定外观。"
+)
+
+
 
 @dataclass
 class ScheduleData:
@@ -126,6 +135,10 @@ class ScheduleData:
 
 class ScheduleStore:
     """日程的 JSON 存取（原子写，损坏时降级为空而不是清空文件）。"""
+
+    # 只保留最近这么多天的记录：历史只用于「参考历史天数」生成新日程，
+    # 留太多会让文件无限膨胀（每天一条，几年后就是几 MB 的同步读）。
+    KEEP_DAYS = 30
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -154,7 +167,16 @@ class ScheduleStore:
 
     def set(self, data: ScheduleData) -> None:
         self._data[data.date] = data
+        self._trim()
         self._save()
+
+    def _trim(self) -> None:
+        """只留最近 KEEP_DAYS 天（按日期字符串排序，坏的日期直接丢掉）。"""
+        if len(self._data) <= self.KEEP_DAYS:
+            return
+        keep = sorted(self._data.keys())[-self.KEEP_DAYS:]
+        keep_set = set(keep)
+        self._data = {d: v for d, v in self._data.items() if d in keep_set}
 
     def _save(self) -> None:
         from .safe_io import sync_write_json
@@ -266,16 +288,42 @@ class ScheduleGenerator:
         except Exception:
             return ""
 
+    # 生成日程时最多带多少人设正文：30KB 的人设全量送进去，每天一次也够贵，
+    # 而且日程只需要「身份/生活背景」这类粗信息。
+    _PERSONA_LIMIT = 1200
+
     async def _persona(self) -> str:
-        """人设来自 AstrBot 自身配置（由主类统一解析并注入 identity）。"""
+        """人设来自 AstrBot 自身配置（由主类统一解析并注入 identity）。
+
+        只对**日程生成**用，且做截断：优先结构化生活背景，其次人设正文前 N 字。
+        """
+        text = ""
         obj = getattr(self, "identity", None)
         if obj is not None:
-            return obj.persona_block()
-        try:
-            p = await self.context.persona_manager.get_default_persona_v3()
-            return (p.get("prompt") if isinstance(p, dict) else getattr(p, "prompt", "")) or ""
-        except Exception:
-            return ""
+            bits: list[str] = []
+            try:
+                who = str(getattr(obj, "bot_name", "") or "").strip()
+                if who:
+                    bits.append(f"自称：{who}")
+                bg = str(getattr(obj, "life_bg", "") or "").strip()
+                if bg:
+                    bits.append(bg)
+                body = obj.persona_block() if hasattr(obj, "persona_block") else ""
+                if str(body or "").strip():
+                    bits.append(str(body).strip())
+            except Exception:  # noqa: BLE001 - 拿不到就退回纯 persona
+                bits = []
+            text = "\n".join(bits).strip()
+        if not text:
+            try:
+                p = await self.context.persona_manager.get_default_persona_v3()
+                text = (p.get("prompt") if isinstance(p, dict) else getattr(p, "prompt", "")) or ""
+            except Exception:
+                text = ""
+        text = str(text or "").strip()
+        if len(text) > self._PERSONA_LIMIT:
+            text = text[: self._PERSONA_LIMIT].rstrip() + "…"
+        return text
 
     async def _weather_text(self) -> str:
         """今日天气，供穿搭/活动贴合真实天气（异步非阻塞）；失败返回空串。"""
@@ -366,6 +414,13 @@ class ScheduleGenerator:
     def build_prompt(self, ctx: dict, extra: str = "") -> str:
         tmpl = self._template()
         values = dict(ctx)
+        # 外观锚点：没配置时把占位符所在的整行删掉，别在提示词里留个空标题
+        appearance = str(values.get("appearance") or "").strip()
+        values["appearance"] = appearance
+        values["appearance_rule"] = _APPEARANCE_RULE if appearance else ""
+        for key in ("appearance", "appearance_rule"):
+            if not str(values.get(key) or "").strip():
+                tmpl = re.sub(rf"^.*\{{{key}\}}.*(?:\r?\n)?", "", tmpl, flags=re.M)
         # 模板里出现的未知占位符统一补空，避免 KeyError
         for var in _VAR_RE.findall(tmpl):
             values.setdefault(var, "")
@@ -462,6 +517,7 @@ class ScheduleGenerator:
                 "weekday": _WEEKDAYS[d.weekday()],
                 "holiday": self._holiday(d.date()),
                 "persona_desc": await self._persona(),
+                "appearance": str(self._cfg("日程_外观锚点", "") or "").strip(),
                 "history_schedules": self._history_text(d.date()),
                 "recent_chats": await self._recent_chats(umo),
                 "recent_explorations": self._recent_explorations(),

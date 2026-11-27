@@ -161,11 +161,11 @@ class TestSpeechStyleModelAware(unittest.TestCase):
 
     def test_gpt_hint(self):
         block = speech_style_block(self._cfg(), "gpt-4o")
-        self.assertIn("翻译腔", block)
+        self.assertIn("自动分点", block)
 
     def test_claude_hint(self):
         block = speech_style_block(self._cfg(), "claude-3-5-sonnet")
-        self.assertIn("文学比喻", block)
+        self.assertIn("比喻", block)
 
     def test_unknown_model_no_hint(self):
         block = speech_style_block(self._cfg(), "some-local-7b")

@@ -78,11 +78,11 @@ class TestBuildLifeStateBlock:
         assert "09:00 写代码" in block
 
     def test_header_softens_hard_push(self):
-        # 弱化「硬塞日程」：只在被问到/聊到那份上时顺口提一句，别强行汇报
+        # 头部改成纯「备查」口吻：没问到就绝口不提，别把日程当稿子念
         block = build_life_state_block(BASE_CFG, now=NOW, info=INFO)
         head = block.splitlines()[0]
-        assert "顺口提一句" in head
-        assert "别硬塞" in head
+        assert "背景备查" in head
+        assert "绝口不提" in head
         assert "不要逐条复述" not in head  # 旧文案：只说别复述，模型照样硬塞
 
     def test_schedule_truncation_is_clamped_to_min(self):
@@ -242,8 +242,10 @@ class TestOnLifeStateLlmRequest:
         monkeypatch.setattr(life_inject, "read_schedule", lambda *a, **k: INFO)
         plugin = _FakePlugin(BASE_CFG)
         req = SimpleNamespace(extra_user_content_parts=[], system_prompt="sys")
+        # 按需注入：这条消息同时问到「在干嘛」和「穿什么」，两层的资料都该给
+        event = SimpleNamespace(message_str="你现在在干嘛呀？今天穿什么衣服")
         asyncio.run(
-            _plugin_class().on_life_state_llm_request(plugin, SimpleNamespace(), req)
+            _plugin_class().on_life_state_llm_request(plugin, event, req)
         )
         # 可能注入了多个临时块（生活状态 + 说话方式），找出含生活状态 MARKER 的那个
         texts = [p.text for p in req.extra_user_content_parts]
@@ -274,12 +276,11 @@ class TestOnLifeStateLlmRequest:
         assert all(MARKER not in getattr(p, "text", "") for p in req.extra_user_content_parts)
 
     def test_hook_swallows_build_errors(self, monkeypatch):
-        import astrbot_plugin_proactive_life.main as main_mod
-
-        def boom(cfg):
+        def boom(*args, **kwargs):
             raise RuntimeError("build failed")
 
-        monkeypatch.setattr(main_mod, "build_life_state_block", boom)
+        # 组装逻辑已下沉到 life_inject.inject_passive_context，补丁要打在真实调用点
+        monkeypatch.setattr(life_inject, "build_life_state_block", boom)
         plugin = _FakePlugin(BASE_CFG)
         req = SimpleNamespace(extra_user_content_parts=[], system_prompt="sys")
         # 注入失败不能把正常回复搞挂
@@ -327,7 +328,7 @@ class _FakePrivateHandler:
     def _builtin_motive(self):
         return "", ""
 
-    def _save_state(self):
+    def _save_state(self, *args, **kwargs):
         self.saved += 1
 
     def _log_activity(self, *args, **kwargs):

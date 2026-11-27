@@ -106,6 +106,7 @@ class GroupMuteMixin:
         path = self._mute_store_path()
         if not path:
             return {}
+        from .common import canonical_group_key
         from .safe_io import sync_read_json
 
         data = sync_read_json(
@@ -121,7 +122,11 @@ class GroupMuteMixin:
             except (TypeError, ValueError):
                 continue
             if ts > now:
-                out[str(k)] = ts
+                # 旧版本存的是完整 origin，统一归一成裸群号，否则读端查不到
+                key = canonical_group_key(k)
+                if not key:
+                    continue
+                out[key] = max(out.get(key, 0.0), ts)
         return out
 
     def _save_muted(self, raise_on_error: bool = False):
@@ -142,7 +147,13 @@ class GroupMuteMixin:
 
         只在 Bot 刚开过口的窗口里判，而且只判短句 —— 长篇大论里出现个
         "烦" 字八成跟她没关系。
+
+        默认关闭（`群聊插话_模型判闭嘴=False`）：这一步每判一次就是一次真实
+        的模型调用，而关键词规则已经能覆盖绝大多数「闭嘴/别吵/好烦」。
+        需要更细的语义判断时再打开。
         """
+        if not bool(self.cfg.get("群聊插话_模型判闭嘴", False)):
+            return False
         t = (text or "").strip()
         if not t or len(t) > 30:
             return False
@@ -200,23 +211,37 @@ class GroupMuteMixin:
             logger.debug("proactive_life | 闭嘴判定后台任务失败: %s", e)
 
     def _is_muted(self, origin: str) -> bool:
-        until = self._muted_until.get(origin, 0.0)
+        """是否仍在闭嘴期。
+
+        Key 统一走 ``canonical_group_key``：写端可能拿到完整 origin，
+        读端（main.on_group_reread / 群主动链路）拿到的是裸群号，
+        两边必须归一到同一个 Key，否则闭嘴功能静默失效。
+        """
+        from .common import canonical_group_key
+
+        key = canonical_group_key(origin)
+        until = self._muted_until.get(key, 0.0)
         if not until:
             return False
         if time.time() >= until:
-            self._muted_until.pop(origin, None)
+            self._muted_until.pop(key, None)
             return False
         return True
 
     def _mute_group(self, origin: str, minutes: float, by: str = ""):
         if minutes <= 0:
             return
+        from .common import canonical_group_key
+
+        key = canonical_group_key(origin)
+        if not key:
+            return
         until = time.time() + minutes * 60.0
         # 已经在静默里就别把时间往后推，免得连着喊两句就锁死一小时
-        if self._muted_until.get(origin, 0.0) >= until:
+        if self._muted_until.get(key, 0.0) >= until:
             return
-        self._muted_until[origin] = until
+        self._muted_until[key] = until
         self._save_muted()
         self._diag(origin, f"被 {by or '群友'} 要求闭嘴，静默 {int(minutes)} 分钟")
         # 被要求闭嘴，情绪走低
-        self._mood_apply(origin, "muted", "被要求闭嘴")
+        self._mood_apply(key, "muted", "被要求闭嘴")

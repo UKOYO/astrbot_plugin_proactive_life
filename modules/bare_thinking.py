@@ -16,6 +16,16 @@ from __future__ import annotations
 
 import re
 
+# 代码围栏 / 行内代码的掩码实现与 think_filtering 共用一套：
+# 覆盖 ``` / ~~~ 围栏与 `行内代码`，避免把示例里的 `<thinking>` 当思考块删掉。
+from .think_filtering import (
+    CODE_SPAN_RE,
+    mask_code_spans,
+    unmask_code_spans,
+)
+
+CODE_FENCE = CODE_SPAN_RE
+
 # ── 成对标签：先整体摘除 ──
 BLOCK_TAGS = [
     r"<thinking>.*?</thinking>",
@@ -57,7 +67,14 @@ INLINE_SELF = [
     r"^[^。！？\n]{0,24}?(我需要回答|需要回答中文|要回应用户|要满足用户|回答要满足)[^。！？\n]{0,40}?[。！？]",
 ]
 
-CODE_FENCE = re.compile(r"```.*?```", re.S)
+
+def _mask_fences(text: str) -> tuple[str, list[str]]:
+    """把代码围栏/行内代码换成占位符，避免后续正则改到它们。"""
+    return mask_code_spans(text)
+
+
+def _unmask_fences(text: str, fences: list[str]) -> str:
+    return unmask_code_spans(text, fences)
 
 
 def _is_head(line: str) -> bool:
@@ -77,17 +94,20 @@ def strip_bare_thinking(text: str, max_scan: int = 30) -> str:
     if not text or not text.strip():
         return text
 
-    # 1. 成对标签先摘（围栏外的才摘）
+    # 1. 成对标签先摘（**围栏内的原文不动**：先遮住代码围栏再删标签，
+    #    否则用户让你解释 `<thinking>` 时，代码示例会被当成思考块删掉）
+    masked, fences = _mask_fences(text)
     for p in BLOCK_TAGS:
-        text = re.sub(p, "", text, flags=re.S | re.I)
+        masked = re.sub(p, "", masked, flags=re.S | re.I)
+    text = _unmask_fences(masked, fences)
 
-    # 2. 切行，护住代码围栏
+    # 2. 切行，护住代码围栏（``` 与 ~~~ 两种围栏都要认）
     lines = text.split("\n")
     protected: list[bool] = []
     in_fence = False
     for ln in lines:
         protected.append(in_fence)
-        if ln.lstrip().startswith("```"):
+        if ln.lstrip().startswith(("```", "~~~")):
             in_fence = not in_fence
 
     # 3. 从第一个非空行开始判定是否进入思考段
@@ -133,7 +153,7 @@ def strip_bare_thinking(text: str, max_scan: int = 30) -> str:
             if (
                 0 < len(stripped) <= 12
                 and not re.search(r"[。！？!?]$", stripped)
-                and not stripped.startswith("```")
+                and not stripped.startswith(("```", "~~~"))
                 and not _is_stop(ln)
                 and not re.search(r"[\u4e00-\u9fff]{2,}[的吧了呢啊哦呀嘛]", stripped)
                 and not re.search(r"[A-Za-z]{3,}", stripped)
@@ -152,9 +172,11 @@ def strip_bare_thinking(text: str, max_scan: int = 30) -> str:
 
     result = "\n".join(out)
 
-    # 4. 行内自述句，削到标点
+    # 4. 行内自述句，削到标点（同样不碰代码围栏）
+    masked, fences = _mask_fences(result)
     for p in INLINE_SELF:
-        result = re.sub(p, "", result)
+        masked = re.sub(p, "", masked)
+    result = _unmask_fences(masked, fences)
 
     # 5. 收尾整形
     result = re.sub(r"\n{3,}", "\n\n", result).strip()

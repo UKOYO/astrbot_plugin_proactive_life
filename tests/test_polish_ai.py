@@ -35,17 +35,28 @@ class TestAIRuleCatalog(unittest.TestCase):
 
         ids = [r["id"] for r in ALL_AI_RULES]
         self.assertEqual(len(ids), len(set(ids)), "存在重复规则 id")
-        # 职场黑话用序号 id，不能是 hash（hash 每次进程都变）
+        # 职场黑话用序号 id，不能是 hash（hash 每次进程都变）；
+        # 单个「高歧义，仅统计」规则用可读固定 id。
         corp = [i for i in ids if i.startswith("corp_")]
         self.assertTrue(corp)
         for i in corp:
-            self.assertRegex(i, r"^corp_\d{2}$")
+            self.assertRegex(i, r"^corp_(?:\d{2}|ambiguous)$")
 
 
 class TestAIBoilerplateCleaning(unittest.TestCase):
-    """各类八股都要能被清掉。"""
+    """各类八股都要能被清掉（full 档：显式开启改写）。"""
 
     def _p(self):
+        from astrbot_plugin_proactive_life.modules.prose_polish import ProsePolisher
+
+        return ProsePolisher({
+            "清AI八股": True, "演练模式": False,
+            # 显式切到 full 档：这些规则默认（止损档）是不跑的
+            "清洗档位": "full", "改句式": True, "换词": True,
+            "删八股短语": True, "水词配额": 1, "合并碎句": True,
+        })
+
+    def _minimal(self):
         from astrbot_plugin_proactive_life.modules.prose_polish import ProsePolisher
 
         return ProsePolisher({"清AI八股": True, "演练模式": False})
@@ -57,7 +68,7 @@ class TestAIBoilerplateCleaning(unittest.TestCase):
         self.assertNotIn("首先", out)
         self.assertNotIn("其次", out)
         self.assertIn("明确目标", out)   # 正文要保住
-        self.assertEqual(hits, 3)
+        self.assertGreaterEqual(hits, 3)
 
     def test_worth_noting(self):
         out, hits, _ = self._p().polish("值得注意的是，这个方案不错。")
@@ -92,6 +103,41 @@ class TestAIBoilerplateCleaning(unittest.TestCase):
     def test_redundant_adverb(self):
         out, _, _ = self._p().polish("这个非常非常重要。")
         self.assertNotIn("非常非常", out)
+
+    # ---- 止损档（默认）：只扫地，不做语义改写 ----
+
+    def test_minimal_strips_format_noise(self):
+        out, _, _ = self._minimal().polish("**重点**如下：\n1. 第一点\n2. 第二点")
+        self.assertNotIn("**", out)
+        self.assertNotIn("1.", out)
+        self.assertIn("重点", out)
+
+    def test_minimal_trims_service_tail(self):
+        out, _, _ = self._minimal().polish("今天加班到九点。欢迎随时告诉我。")
+        self.assertNotIn("欢迎随时告诉我", out)
+
+    def test_minimal_trims_ending_elevation(self):
+        out, hits, _ = self._minimal().polish("改一行就行。让我们一起努力，创造更美好的未来！")
+        self.assertNotIn("让我们一起", out)
+        self.assertGreater(hits, 0)
+
+    def test_minimal_only_uses_whole_sentence_trims(self):
+        """止损档命中的只能是「整句裁剪」类（trim_*），不会跑句式/词表规则。"""
+        out, hits, rules = self._minimal().polish("值得注意的是，这个方案不错。")
+        self.assertTrue(hits > 0)
+        self.assertTrue(all(r.startswith("trim_") for r in rules), rules)
+        # 正文保住
+        self.assertIn("这个方案不错", out)
+
+    def test_minimal_keeps_self_reference_and_redundant(self):
+        for text in ("作为AI，这个问题我不好答。", "这个非常非常重要。"):
+            out, _, _ = self._minimal().polish(text)
+            self.assertEqual(out, text, text)
+
+    def test_minimal_keeps_corporate_words(self):
+        text = "我们要赋能团队，形成闭环。"
+        out, _, _ = self._minimal().polish(text)
+        self.assertEqual(out, text)
 
     def test_switch_off_keeps_text(self):
         from astrbot_plugin_proactive_life.modules.prose_polish import ProsePolisher

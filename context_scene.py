@@ -270,12 +270,33 @@ class SceneGenerator:
         show_flow: bool = True,
         summary: str = "",
         member_note: str = "",
+        flat: bool = False,
     ) -> str:
+        """生成场景提示。
+
+        flat=True（`拟人_模型档位=lite`）时拍平成 2 行纯文本：XML 标签对弱模型
+        既占 Token 又稀释注意力，语义保留、格式去掉即可。
+        """
         esc = self._esc
+        target = "你" if current.is_to_bot else self._describe_target(current)
+        instruction = self._instruction(trigger_type, current, current.is_to_bot,
+                                        current.talking_to == "group")
+
+        if flat:
+            head = f"【场景】{trigger_desc}；{current.sender_name} 这句是说给{target}的。"
+            bits: list[str] = []
+            if instruction:
+                bits.append(instruction)
+            if summary:
+                bits.append(f"记得：{summary}")
+            if member_note:
+                bits.append(f"对方习惯：{member_note}")
+            tail = ("【提示】" + "；".join(bits)) if bits else ""
+            return "\n".join(x for x in (head, tail) if x)
+
         parts = ["<conversation_scene>"]
         parts.append(f'  <trigger type="{esc(trigger_type)}">{esc(trigger_desc)}</trigger>')
 
-        target = "你" if current.is_to_bot else self._describe_target(current)
         parts.append(
             "  <current_message>"
             f"\n    <sender>{esc(current.sender_name)}</sender>"
@@ -284,8 +305,6 @@ class SceneGenerator:
             "\n  </current_message>"
         )
 
-        instruction = self._instruction(trigger_type, current, current.is_to_bot,
-                                        current.talking_to == "group")
         if instruction:
             parts.append(f"  <instruction>{instruction}</instruction>")
 

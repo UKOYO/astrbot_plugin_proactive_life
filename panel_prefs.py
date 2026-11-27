@@ -7,9 +7,6 @@ AstrBot 插件页面运行在受限 iframe 中，浏览器 localStorage 可能�
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -77,17 +74,14 @@ def _sanitize(raw: Any) -> dict[str, Any]:
 
 
 def load_prefs(plugin: Any = None) -> dict[str, Any]:
-    path = _prefs_path(plugin)
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return _sanitize(data)
+    """读取面板偏好；文件缺失或损坏时返回空表。"""
+    from .safe_io import sync_read_json
+
+    return _sanitize(sync_read_json(_prefs_path(plugin), {}))
 
 
 def save_prefs(patch: dict[str, Any], plugin: Any = None) -> dict[str, Any]:
+    """合并并原子落盘；写入失败抛 OSError（由接口层转成 500）。"""
     current = load_prefs(plugin)
     cleaned = _sanitize(patch)
     if not cleaned:
@@ -95,17 +89,9 @@ def save_prefs(patch: dict[str, Any], plugin: Any = None) -> dict[str, Any]:
 
     merged = {**current, **cleaned}
     path = _prefs_path(plugin)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # 原子写统一走 safe_io，不再自己维护一份临时文件 + replace 逻辑
+    from .safe_io import sync_write_json
 
-    fd, tmp_name = tempfile.mkstemp(prefix=".panel_prefs_", suffix=".tmp", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(merged, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    if not sync_write_json(path, merged, log_prefix="proactive_life | 面板偏好落盘失败"):
+        raise OSError(f"写入 {path} 失败")
     return merged

@@ -135,6 +135,8 @@ def polish_text(text: str, cfg: Any, event: Any = None, *, stage: str = "polish"
         if _POLISHER is None:
             _POLISHER = ProsePolisher({})
         _POLISHER.config.update({
+            # 档位：minimal（默认）只做格式兜底 + 整句裁剪；full 才跑换词/删词
+            "清洗档位": str(_cfg(cfg, "出站_清洗档位", "minimal") or "minimal"),
             "清AI八股": bool(_map("清AI八股", True)),
             "改句式": bool(_map("改句式", True)),
             "换词": bool(_map("换词", True)),

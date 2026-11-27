@@ -13,7 +13,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .rhythm_trimmer import (
-    has_markdown, strip_faces, strip_trailing_punct, split_message,
+    has_markdown, human_pause, strip_faces, strip_trailing_punct, split_message,
 )
 
 
@@ -128,15 +128,26 @@ class RhythmMixin:
             }
 
     async def _rhythm_send_rest(
-        self, event, rest: list[str], gap: float, result, plain_idx, fallback_text: str
+        self, event, rest: list[str], gap: float, result, plain_idx, fallback_text: str,
+        fast: bool = False,
     ) -> None:
         """非同步补发其余气泡；创建任务失败时回退整条发送。"""
 
         async def _send_rest():
-            for seg in rest:
-                # 首条保底延迟：第一条还挂在 result.chain 里等宿主发，
-                # gap 太小（如 0.2s）时它可能比第一条先到，导致气泡乱序。
-                delay = max(gap, _FIRST_SEG_MIN_GAP)
+            for idx, seg in enumerate(rest):
+                if idx == 0:
+                    # 首条保底延迟：第一条还挂在 result.chain 里等宿主发，
+                    # gap 太小时它可能比第一条先到，导致气泡乱序。
+                    delay = max(human_pause(gap, seg), _FIRST_SEG_MIN_GAP)
+                elif gap <= 0:
+                    # 配置 0 = 真连发：不再被拟真下限（0.35s）顶住
+                    delay = 0.0
+                else:
+                    # 按这一段的字数算停顿（字越多打得越久）
+                    delay = human_pause(gap, seg)
+                if fast and delay > 0:
+                    # 长文条数多：别按打字节奏慢慢磨，不然一条回复发一分钟
+                    delay = min(delay, 0.6)
                 await asyncio.sleep(delay)
                 try:
                     await event.send(event.plain_result(seg))
@@ -185,6 +196,14 @@ class RhythmMixin:
         full, plain_idx = parsed
         text, hits = self._rhythm_prepare(full)
         mode = str(self._rhythm_get("节奏_处理方式", "split")).lower()
+
+        # 拆条会把 result.chain 截成第一段，after_message_sent 只能读到开头那句。
+        # 完整回复先挂到事件上，供「私聊追问判定」与「群聊接话上下文」取用，
+        # 否则问句落在最后一段时会被彻底漏判。
+        try:
+            event.set_extra("_pl_full_reply", text)
+        except Exception as e:  # noqa: BLE001 - 老事件没有 set_extra 时照旧走回退
+            logger.debug("[节奏修剪] 完整回复暂存失败: %s", e)
 
         def _single(new_text: str, fmt: str, *args) -> None:
             """单条分支的统一收尾：记录状态 -> 打印详情 -> 写回 chain。"""
@@ -271,8 +290,9 @@ class RhythmMixin:
             return
 
         gap = max(0.0, float(self._rhythm_get("节奏_间隔秒数", 0.2) or 0))
-        if len(segments) > 6:
-            # 长文条数多，别按打字节奏慢慢磨，不然发一分钟
-            gap = min(gap, 0.3)
+        # 长文条数多时改成「快速档」，由 _rhythm_send_rest 里的上限压住节奏
+        fast = len(segments) > 6
 
-        await self._rhythm_send_rest(event, rest, gap, result, plain_idx, text)
+        await self._rhythm_send_rest(
+            event, rest, gap, result, plain_idx, text, fast=fast
+        )

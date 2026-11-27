@@ -111,22 +111,36 @@ async def do_action(plugin, payload: dict) -> dict:
 
     if action == "preset_apply":
         name = str(payload.get("name", "") or "").strip()
+        # 键名必须是 EDITABLE 里的真名，写错会被下面的白名单过滤静默丢掉
         presets = {
             "restrained": {
                 "触发概率": 0.25, "群聊自发破冰概率": 0.15, "群聊插话_概率": 0.02,
                 "摸鱼干活概率": 0.2, "跟读_概率": 0.1, "戳一戳_回应概率": 0.4,
-                "水词配额": 0, "心安时长": 90,
+                "安静多久才找": 90,
+                # 出站清洗统一走止损档：改词改句容易出语病
+                "出站_清洗档位": "minimal",
             },
             "balanced": {
                 "触发概率": 0.55, "群聊自发破冰概率": 0.35, "群聊插话_概率": 0.05,
                 "摸鱼干活概率": 0.4, "跟读_概率": 0.35, "戳一戳_回应概率": 0.7,
-                "水词配额": 1,
+                "出站_清洗档位": "minimal",
             },
             "active": {
                 "触发概率": 0.8, "群聊自发破冰概率": 0.6, "群聊插话_概率": 0.15,
                 "摸鱼干活概率": 0.7, "跟读_概率": 0.6, "戳一戳_回应概率": 0.95,
-                "水词配额": 2,
+                "出站_清洗档位": "minimal",
             },
+            # 低负载 / 与外部插件共存：关掉后台模型调用与重复记忆，
+            # 日常闲聊只剩"主回复"这一次模型调用（外部记忆/表情包插件接管对应能力）
+            "lowload": {
+                "场景感知_总结启用": False,
+                "拟人_跨会话记忆": False,
+                "黑话_自动解析": False,
+                "出站_清洗档位": "minimal",
+            },
+        }
+        preset_labels = {
+            "restrained": "克制", "balanced": "均衡", "active": "活跃", "lowload": "低负载",
         }
         if name not in presets:
             return {"ok": False, "message": "未知档位"}
@@ -141,7 +155,7 @@ async def do_action(plugin, payload: dict) -> dict:
             return {"ok": False, "message": str(result.get("message") or "档位应用失败")}
         return {
             "ok": True,
-            "message": f"已应用「{name}」档位（{len(patch)} 项）",
+            "message": f"已应用「{preset_labels.get(name, name)}」档位（{len(patch)} 项）",
             "changed": patch,
         }
 

@@ -1,7 +1,6 @@
 """跨 handler 共用的常數與路徑解析，避免硬編碼散落各處。"""
 
 import datetime
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -149,6 +148,81 @@ def parse_quiet_hours(raw, default=DEFAULT_QUIET_HOURS) -> list[int]:
     return sorted(set(hours))
 
 
+# ---------------------------------------------------------------- 会话 Key 归一化
+
+def canonical_group_key(origin_or_gid: Any) -> str:
+    """把「完整 origin」或「裸群号」统一成裸群号。
+
+    群静默（mute_until）与群情绪这些表，写入端用的是完整 origin
+    （``platform:GroupMessage:gid``），读取端却用裸 gid，两边永远对不上，
+    功能就静默失效了。全插件读写群相关 Key 必须过这里。
+    """
+    s = str(origin_or_gid or "").strip()
+    if not s:
+        return ""
+    if ":" in s:
+        return s.rsplit(":", 1)[-1].strip()
+    return s
+
+
+def canonical_session_key(event: Any) -> str:
+    """统一会话 Key：私聊用 uid，群聊用裸群号（与情绪/静默的读写端一致）。"""
+    if event is None:
+        return ""
+    try:
+        if event.is_private_chat():
+            return str(event.get_sender_id() or "")
+        gid = getattr(event, "get_group_id", lambda: "")()
+        return canonical_group_key(gid)
+    except Exception as e:  # noqa: BLE001 - 事件字段缺失时按空 Key 处理
+        _debug("会话 Key 归一化失败", e)
+        return ""
+
+
+# ---------------------------------------------------------------- 平台实例 / UMO
+
+def iter_platform_insts(context: Any) -> list:
+    """遍历已加载的平台实例。
+
+    AstrBot 不同调用点/版本属性名不一致（``platform_manager.get_insts()`` 与
+    ``platform_manager.platform_insts``），这里兼容两套，避免某处静默拿不到。
+    """
+    pm = getattr(context, "platform_manager", None) if context is not None else None
+    if pm is None:
+        return []
+    getter = getattr(pm, "get_insts", None)
+    if callable(getter):
+        try:
+            insts = list(getter() or [])
+            if insts:
+                return insts
+        except Exception as e:  # noqa: BLE001 - 退回属性访问
+            _debug("platform_manager.get_insts() 失败，改用 platform_insts", e)
+    try:
+        return list(getattr(pm, "platform_insts", None) or [])
+    except Exception as e:  # noqa: BLE001
+        _debug("platform_manager.platform_insts 读取失败", e)
+        return []
+
+
+def platform_id(context: Any, default: str = "") -> str:
+    """取第一个已加载平台适配器的 id（拼 UMO 用）。"""
+    for inst in iter_platform_insts(context):
+        pid = getattr(getattr(inst, "metadata", None), "id", None)
+        if pid:
+            return str(pid)
+    return default
+
+
+def resolve_umo(
+    context: Any, msg_type: str, target_id: str, default_platform: str = "aiocqhttp"
+) -> str:
+    """拼一个会话 UMO：``platform:MessageType:target_id``。"""
+    pid = platform_id(context, default_platform) or default_platform
+    return f"{pid}:{msg_type}:{target_id}"
+
+
+
 def scheduler_data_path() -> Path:
     """回傳 life_scheduler 的資料目錄。
 
@@ -206,6 +280,12 @@ def _business_date(schedule_time: str | None, now=None) -> str:
     return now.strftime("%Y-%m-%d")
 
 
+# 日程解析结果缓存：被动回复热路径 + 面板每 4 秒轮询都会读，没必要每次都读盘。
+# Key = (业务日期, ((path, mtime_ns, size), ...))，文件一变就自动失效。
+_SCHEDULE_ENTRY_CACHE: dict[tuple, dict] = {}
+_SCHEDULE_CACHE_MAX = 8
+
+
 class ScheduleReader:
     """只读读取日程（中樞自产的优先，其次 life_scheduler 产），提供穿搭/当前活动。"""
 
@@ -219,32 +299,54 @@ class ScheduleReader:
     def _candidates(self) -> list[Path]:
         return self._files if self._files else [self.file]
 
+    def _stamp(self, date_str: str) -> tuple:
+        """文件戳：任何一个候选文件被改写都会让缓存失效。"""
+        items: list[tuple] = []
+        for path in self._candidates():
+            try:
+                st = path.stat()
+                items.append((str(path), st.st_mtime_ns, st.st_size))
+            except OSError:
+                items.append((str(path), 0, 0))
+        return (date_str, tuple(items))
+
+    def _read_entry(self, date_str: str) -> dict:
+        """按候选顺序取第一份「当天有内容」的原始条目（带文件戳缓存）。"""
+        stamp = self._stamp(date_str)
+        cached = _SCHEDULE_ENTRY_CACHE.get(stamp)
+        if cached is not None:
+            return cached
+        from .safe_io import sync_read_json
+
+        entry: dict = {}
+        for path in self._candidates():
+            raw = sync_read_json(path, None)
+            candidate = raw.get(date_str) if isinstance(raw, dict) else None
+            if isinstance(candidate, dict) and str(candidate.get("schedule") or ""):
+                entry = candidate
+                break
+        if len(_SCHEDULE_ENTRY_CACHE) >= _SCHEDULE_CACHE_MAX:
+            _SCHEDULE_ENTRY_CACHE.clear()
+        _SCHEDULE_ENTRY_CACHE[stamp] = entry
+        return entry
+
     def read(self, now=None) -> dict:
         """返回 {date, outfit, outfit_style, schedule, current_activity, time_desc}。
 
         按 candidates 顺序取第一份「当天有内容」的；都没有则返回空结构。
+        读盘结果按文件戳缓存，但「此刻在做 / 时段」始终按传入的 now 现算。
         """
         date_str = _business_date(self.schedule_time, now)
-        from .safe_io import sync_read_json
-
-        for path in self._candidates():
-            raw = sync_read_json(path, None)
-            entry = raw.get(date_str) if isinstance(raw, dict) else None
-            if not isinstance(entry, dict):
-                continue
-            schedule = str(entry.get("schedule") or "")
-            if not schedule:
-                continue
-            return {
-                "date": date_str,
-                "outfit": str(entry.get("outfit") or ""),
-                "outfit_style": str(entry.get("outfit_style") or ""),
-                "schedule": schedule,
-                "current_activity": self._current_activity(schedule, now),
-                "time_desc": self._time_desc((now or datetime.datetime.now()).hour),
-            }
-        return {"date": date_str, "outfit": "", "outfit_style": "", "schedule": "",
-                "current_activity": "", "time_desc": ""}
+        entry = self._read_entry(date_str)
+        schedule = str(entry.get("schedule") or "")
+        return {
+            "date": date_str,
+            "outfit": str(entry.get("outfit") or ""),
+            "outfit_style": str(entry.get("outfit_style") or ""),
+            "schedule": schedule,
+            "current_activity": self._current_activity(schedule, now),
+            "time_desc": self._time_desc((now or datetime.datetime.now()).hour),
+        }
 
     @staticmethod
     def _time_desc(h: int) -> str:

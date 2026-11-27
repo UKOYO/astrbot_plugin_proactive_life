@@ -33,6 +33,43 @@ MARKER = "【当前生活状态】"
 _MIN_LIMIT = 60
 _MAX_LIMIT = 2000
 
+# 「按需注入」用的触发词分层：
+# - 状态/时间层：对方在问此刻在做什么、今天怎么安排
+# - 外观/穿搭层：对方在问长相、衣服、打扮
+# 关键词只做粗筛，命中才多给几行；没命中就不给，避免低智模型把日程当稿子念。
+_STATUS_WORDS = (
+    "干嘛", "在干", "干什么", "做什么", "在忙", "忙吗", "忙不忙", "忙啥", "忙什么",
+    "日程", "安排", "计划", "今天", "现在", "几点", "在哪", "在哪呢", "出门",
+    "睡了", "睡没", "醒了吗", "吃饭", "吃啥", "吃什么", "午饭", "晚饭", "夜宵",
+    "上班", "下班", "加班", "上课", "放假", "周末", "休息",
+)
+_LOOK_WORDS = (
+    "穿什么", "穿啥", "穿搭", "衣服", "裙子", "外套", "打扮", "造型", "头发",
+    "发色", "瞳色", "眼睛", "长什么", "长相", "样子", "自拍", "照片", "好看吗",
+)
+
+# 低信息量短句：这类消息没有明确话题，才适合把「可提起的心事」递给模型。
+# 有明确主题时塞心事，模型会把话题硬拐到心事上。
+_LOW_CONTENT_WORDS = (
+    "在吗", "在么", "在嘛", "在不在", "在", "喂", "干嘛", "干嘛呢", "干什么",
+    "忙吗", "忙不忙", "无聊", "好无聊", "没事", "没事干", "好闲", "闲",
+    "早", "早安", "早上好", "午安", "中午好", "晚上好", "晚安", "睡了", "睡了没",
+    "醒了", "哈喽", "hello", "hi", "嗨", "在干啥", "干啥呢", "干啥",
+)
+_LOW_CONTENT_MAX_LEN = 12
+
+
+def _hit_any(text: str, words: tuple[str, ...]) -> bool:
+    return any(w in text for w in words)
+
+
+def is_low_content_message(text: str) -> bool:
+    """消息是不是「没有明确主题」的短招呼/催场（决定要不要递心事提示）。"""
+    t = str(text or "").strip().lower()
+    if not t or len(t) > _LOW_CONTENT_MAX_LEN:
+        return False
+    return _hit_any(t, _LOW_CONTENT_WORDS)
+
 
 def _debug(msg: str, err: BaseException | None = None) -> None:
     try:
@@ -67,6 +104,8 @@ def build_life_state_block(
     motive: str = "",
     session_key: str = "",
     person: str = "",
+    user_text: str | None = None,
+    slang: str = "",
 ) -> str:
     """拼出「当前生活状态」文本块；关掉或没有日程时返回空串。
 
@@ -78,6 +117,13 @@ def build_life_state_block(
         mood: 可选 ``MoodStore``；传入时附带当前会话情绪提示（独立开关）。
         motive: 可选 1 条未消费的高优心事摘要（只作自然提及提示，不标记消费）。
         session_key: 取情绪用的会话/对象 key。
+        person: 跨会话人物档案文本。
+        user_text: 对方这条消息的正文，用于「按需注入」的关键词门控。
+            None（默认）表示调用方没给正文，维持全量注入；空串表示这条消息
+            确实没有文字（纯图片等），按「没问到」处理。
+        slang: 群黑话提示（``SlangMiner.hint`` 的返回值）。独立入参：
+            以前拼进 ``motive`` 里，会被 ``心事_被动注入`` 开关连坐、还被
+            心事的 80 字截断砍掉尾巴。
     """
     # 模块总开关 + 本次开关，任一关闭都不介入
     try:
@@ -90,6 +136,19 @@ def build_life_state_block(
         return ""
     if not bool(_cfg_get(cfg, "日程_被动注入", True)):
         return ""
+
+    # 按需分层：常态只给时间锚点 + 心情 + 人物档案，
+    # 对方问到「在干嘛/今天」才给此刻在做与日程，问到「穿什么」才给外观与穿搭。
+    # 目的：日程块紧贴用户消息、近因效应极强，低智模型看到就会硬背。
+    want_state = True
+    want_look = True
+    on_demand_active = user_text is not None and bool(
+        _cfg_get(cfg, "日程_被动按需注入", True)
+    )
+    if on_demand_active:
+        probe = str(user_text or "").strip().lower()
+        want_state = _hit_any(probe, _STATUS_WORDS)
+        want_look = _hit_any(probe, _LOOK_WORDS)
 
     now = now or datetime.datetime.now()
     if info is None:
@@ -105,15 +164,19 @@ def build_life_state_block(
         info = {}
 
     outfit = str(info.get("outfit") or "").strip()
+    appearance = str(_cfg_get(cfg, "日程_外观锚点", "") or "").strip()
     activity = str(info.get("current_activity") or "").strip()
     schedule = str(info.get("schedule") or "").strip()
 
     body: list[str] = []
-    if activity:
+    if want_state and activity:
         body.append(f"- 此刻在做：{activity}")
-    if outfit:
+    # 固定外观是稳定信息，跟当天穿搭分开给：换衣服不改长相
+    if want_look and appearance:
+        body.append(f"- 固定外观（不会随穿搭变化）：{appearance}")
+    if want_look and outfit:
         body.append(f"- 今日穿搭：{outfit}")
-    if schedule:
+    if want_state and schedule:
         limit = _limit_of(cfg)
         text = schedule if len(schedule) <= limit else schedule[:limit].rstrip() + "…"
         body.append(f"- 今日日程：\n{text}")
@@ -133,18 +196,26 @@ def build_life_state_block(
         if text:
             body.append(f"- 可以自然提起的心事：{text[:80]}")
 
+    # ---- 群黑话（独立开关：不受「心事_被动注入」连坐，也不被心事 80 字截断）
+    if slang:
+        text = str(slang).strip()
+        if text:
+            body.append(f"- {text}")
+
     # ---- 跨会话「人」档案（1~2 行，群聊只给公开字段）
     if person:
         body.append(person)
 
-    # 没有任何实际内容才放弃注入（标题行本身不算内容）
-    if not body:
+    # 没有任何实际内容才放弃注入（标题行本身不算内容）。
+    # 例外：按需注入模式下确实拿到了用户正文——这时至少保留时间锚点，
+    # 让对方问「现在几点/在干嘛」时模型心里有个时间感。
+    if not body and not on_demand_active:
         return ""
 
     lines = [
-        f"{MARKER}（这是你自己此刻的真实状态，不用汇报、也不用逐条复述；"
-        "只在群友主动问起你在干嘛/在吃什么、或者话题刚好聊到这份上时顺口提一句；"
-        "对方在聊别的事就别硬塞，硬塞一句日程会很出戏）",
+        f"{MARKER}（背景备查：这是你自己此刻的真实状态，对方没问到就绝口不提；"
+        "严禁主动报备、严禁生硬转折、严禁把日程当稿子念；"
+        "对方聊的是别的事，就当这份资料不存在）",
         f"- 现在：{now.strftime('%H:%M')}（{str(info.get('time_desc') or '').strip() or _time_desc(now)}）",
         *body,
     ]
@@ -293,6 +364,363 @@ def inject_temp_images(
     except Exception as e:  # noqa: BLE001
         _debug("临时图片注入失败，本次按未注入处理", e)
         return 0
+
+
+# ---- 临时注入的总预算（所有临时块合计，字符数）----
+# 临时块紧贴用户消息，越长越稀释注意力，也越白烧 Token。
+# full 档 600 字、lite 档 300 字；超预算按优先级裁剪。
+_BUDGET_FULL = 600
+_BUDGET_LITE = 300
+
+# 「刚才那张图」相关词：命中才值得把机器人自己发的图作为视觉部件再喂一遍
+_IMAGE_WORDS = ("图", "表情", "啥", "这", "哈哈", "草", "发")
+_IMAGE_MAX_LEN = 10
+
+
+# 小模型特征：auto 档命中这些就用 lite（拍平场景提示 + 更小的注入预算）
+_LITE_MODEL_MARKERS = (
+    "lite", "mini", "flash", "nano", "small", "tiny",
+    "7b", "8b", "9b", "13b", "haiku",
+)
+
+
+def resolve_model_tier(cfg: Any, model_name: str = "") -> str:
+    """解析「模型档位」：显式 full/lite 优先，auto 时按模型名猜。
+
+    auto + flash/mini/lite/haiku/7b… → lite；其余 → full。
+    模型名拿不到时按 full（保守：不擅自减配）。
+    """
+    try:
+        tier = str(cfg.get("拟人_模型档位", "auto") or "auto").strip().lower()
+    except Exception:  # noqa: BLE001
+        tier = "auto"
+    if tier in ("full", "lite"):
+        return tier
+    name = str(model_name or "").strip().lower()
+    if name and any(m in name for m in _LITE_MODEL_MARKERS):
+        return "lite"
+    return "full"
+
+
+def inject_budget(cfg: Any, model_name: str = "") -> int:
+    """当前档位的临时注入总预算（字符）。"""
+    return _BUDGET_LITE if resolve_model_tier(cfg, model_name) == "lite" else _BUDGET_FULL
+
+
+def image_worth_injecting(user_text: str) -> bool:
+    """对方这条消息是不是在说「刚才那张图」。
+
+    不是的话只保留一句文字摘要（``[表情包]``），不再把图作为视觉部件塞进去：
+    每次 @ 都白付一份视觉 Token，而模型根本用不上。
+    """
+    t = str(user_text or "").strip()
+    if not t:
+        return False
+    if len(t) <= _IMAGE_MAX_LEN:
+        return True
+    return any(w in t for w in _IMAGE_WORDS)
+
+
+def _cut_text(text: str, keep: int) -> str:
+    """把文本裁到 keep 字以内，尽量在行边界断开（避免半句）。
+
+    末尾的省略号也算进 keep，否则预算会超出 1 个字。
+    """
+    if keep >= len(text):
+        return text
+    head = text[: max(0, keep - 1)]
+    cut = head.rfind("\n")
+    if cut >= 80:
+        head = head[:cut]
+    return head.rstrip() + "…"
+
+
+def _fit_budget(parts: list[dict], budget: int) -> list[dict]:
+    """按优先级裁剪临时块，保证合计字数不超预算。
+
+    - **保底块**（身份锚定、生活状态）：默认不动，只有预算被压到极低时才裁；
+    - **弹性块**：说话方式(2) 先裁尾巴但保留核心（``min_keep``），
+      群近期动态(3) 其次整块让路。
+
+    为什么把说话规范留在群动态前面：它决定"像不像人"，每轮都在起作用；
+    群动态只对当下这一条消息有用，少一条不会让模型整体跑偏。
+    """
+    def size(part: dict) -> int:
+        return len(str(part.get("text") or ""))
+
+    total = sum(size(p) for p in parts)
+    if total <= budget:
+        return parts
+
+    def trim(part: dict, keep: int) -> None:
+        nonlocal total
+        text = str(part.get("text") or "")
+        trimmed = _cut_text(text, keep)
+        total -= len(text) - len(trimmed)
+        part["text"] = trimmed
+
+    def drop(part: dict) -> None:
+        nonlocal total
+        total -= size(part)
+        part["text"] = ""
+
+    # 1) 说话方式：裁尾巴，保留核心
+    for part in parts:
+        if total <= budget:
+            break
+        if part.get("elastic") and part.get("priority") == 2 and part.get("text"):
+            keep = max(int(part.get("min_keep", 150)), size(part) - (total - budget))
+            if keep < size(part):
+                trim(part, keep)
+
+    # 2) 群近期动态：整块丢弃
+    for part in parts:
+        if total <= budget:
+            break
+        if part.get("elastic") and part.get("priority") == 3 and part.get("text"):
+            drop(part)
+
+    # 3) 真到这一步说明档位预算被压得极低：连保底块也要缩，但仍保留 60 字
+    for part in parts:
+        if total <= budget:
+            break
+        text = str(part.get("text") or "")
+        if not text:
+            continue
+        keep = max(60, len(text) - (total - budget))
+        if keep < len(text):
+            trim(part, keep)
+    return parts
+
+
+def inject_passive_context(plugin: Any, event: Any, req: Any) -> None:
+    """被动回复链路的一次性注入编排（说话方式 / 近期动态 / 生活状态）。
+
+    顺序固定：说话方式 → 群近期动态 → 生活状态（越靠后越贴近用户消息）。
+    所有块先收集、再按全局预算统一裁剪、最后统一注入，避免叠加膨胀。
+    任何一步失败都只记 debug：注入失败绝不能影响正常回复。
+    """
+    try:
+        from .common import canonical_session_key, get_chat_provider
+
+        # 当前会话真实模型名（说话方式避坑用）与支持的模态（图片注入安全阀用）
+        model_name = ""
+        provider_modalities = None
+        try:
+            umo = str(getattr(event, "unified_msg_origin", "") or "")
+            prov = get_chat_provider(plugin.context, umo or None)
+            if prov is not None:
+                model_name = str(prov.get_model() or "")
+                _pcfg = getattr(prov, "provider_config", None)
+                if hasattr(_pcfg, "get"):
+                    provider_modalities = _pcfg.get("modalities", None)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 情绪 Key 统一走 common.canonical_session_key：私聊用 uid，群聊用裸群号，
+        # 与写入端（handler_base._mood_apply）保持一致。
+        session_key = canonical_session_key(event)
+        user_text = str(getattr(event, "message_str", "") or "")
+
+        # 群聊主动接话的 prompt 里已经带了一份说话规范（_GUARDRAIL），
+        # 这里再挂 speech_style 等于同一请求两份规则，纯浪费 Token。
+        try:
+            group_triggered = bool(event.get_extra("_group_active_message_triggered"))
+        except Exception:  # noqa: BLE001
+            group_triggered = False
+
+        parts: list[dict] = []
+
+        # 身份锚定：**只在对方盘问模型/厂商（私聊）或问「你是谁」（群聊）时注入**，
+        # 平时零开销；语气交给用户人设，插件只挡"自曝底层模型"。
+        try:
+            from .modules.identity_guard import MARKER as ID_MARKER, guard_for_text
+
+            try:
+                bot_name = plugin.group_h._bot_name()
+            except Exception:  # noqa: BLE001
+                bot_name = ""
+            try:
+                is_private = bool(event.is_private_chat())
+            except Exception:  # noqa: BLE001
+                is_private = False
+            guard = guard_for_text(
+                plugin.cfg, bot_name, user_text, private=is_private
+            )
+            if guard:
+                parts.append({
+                    "priority": 1, "marker": ID_MARKER,
+                    "text": guard, "name": "身份锚定",
+                })
+        except Exception as e:  # noqa: BLE001
+            _debug("身份锚定注入失败", e)
+
+        if not group_triggered:
+            try:
+                from .modules.speech_style import (
+                    MARKER as SPEECH_MARKER,
+                    speech_style_block,
+                )
+
+                style = speech_style_block(plugin.cfg, model_name)
+                if style:
+                    parts.append({
+                        "priority": 2, "marker": SPEECH_MARKER,
+                        "text": style, "name": "说话方式",
+                        "min_keep": 150, "elastic": True,
+                    })
+            except Exception as e:  # noqa: BLE001
+                _debug("说话方式注入失败", e)
+
+        # 心事：只在对方发来「没有明确主题」的短招呼时递
+        motive_hint = ""
+        if bool(_cfg_get(plugin.cfg, "心事_被动注入", True)):
+            try:
+                if is_low_content_message(user_text):
+                    motive_hint = plugin.motive_mgr.peek_passive_hint()
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 群黑话：独立入参（不再拼进 motive，避免被心事开关连坐 + 80 字截断）
+        _sync_cfg = getattr(plugin, "_sync_runtime_state", None)
+        if callable(_sync_cfg):
+            _sync_cfg()
+        slang_hint = ""
+        try:
+            _on_module = getattr(plugin, "_module_on", None)
+            _black_on = callable(_on_module) and _on_module("黑话")
+            _gid = str(getattr(event, "get_group_id", lambda: "")() or "")
+            if _black_on and _gid:
+                slang = getattr(plugin, "_slang", None)
+                if slang is None:
+                    from .modules.slang import SlangMiner
+
+                    slang = SlangMiner(int(_cfg_get(plugin.cfg, "黑话_最小命中", 3) or 3))
+                    plugin._slang = slang
+                slang_hint = slang.hint(_gid, plugin.cfg)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 跨会话人物档案：群聊只带公开字段，私聊才带温度/欠着的事
+        person_block = ""
+        try:
+            is_pm_private = bool(event.is_private_chat())
+            _getter = getattr(plugin, "_get_person_memory", None)
+            _pm = _getter() if callable(_getter) else getattr(plugin, "person_memory", None)
+            _uid = str(event.get_sender_id() or "")
+            # 私聊用配置里的「对方称呼」标识对方（+UID 兜底），
+            # 否则 /new 清空记忆后模型会把恋人当成陌生网友。
+            _display = ""
+            if is_pm_private:
+                try:
+                    _display = str(plugin.cfg.get("角色_对方称呼", "") or "").strip()
+                except Exception:  # noqa: BLE001
+                    _display = ""
+            if _pm is not None:
+                person_block = _pm.block(
+                    _uid,
+                    scope="private" if is_pm_private else "group",
+                    name=str(event.get_sender_name() or ""),
+                    current_text=user_text,
+                    display_name=_display,
+                )
+            elif is_pm_private and _display:
+                # 关掉「跨会话记忆」（如 lowload 预设）时档案整块不取，
+                # 但私聊称呼是配置项、与记忆无关，仍要带上，否则又退回裸 QQ 昵称。
+                person_block = f"- 当前私聊对象：{_display}（UID:{_uid}）"
+        except Exception as e:  # noqa: BLE001
+            _debug("人物档案注入失败", e)
+
+        # 群聊带字 @ 兜底（**必须排在【当前生活状态】之前**）：
+        # 刚在群里发生的事比「今天穿什么/现在做什么」和几小时前的旧历史都更新，
+        # 越靠近用户当前消息，模型越会拿它当接话依据。这些消息不进
+        # conversation.history（表情包/插件管线直发），只能靠这里临时补给。
+        # （戳一戳 / 纯艾特已通过 build_prompt 带过上下文，靠 _poke_trigger 跳过）
+        try:
+            is_group = not bool(event.is_private_chat())
+            is_poke = bool(event.get_extra("_poke_trigger"))
+            gid_echo = str(getattr(event, "get_group_id", lambda: "")() or "")
+            ctx = getattr(plugin, "interact_ctx", None)
+            if (
+                is_group
+                and not is_poke
+                and gid_echo
+                and ctx is not None
+                and plugin._module_on("戳一戳")
+                and bool(_cfg_get(plugin.cfg, "戳一戳_收录自己发言", True))
+            ):
+                from .modules.interact_context import (
+                    RECENT_ECHO_MARKER,
+                    build_recent_echo_block,
+                    collect_recent_self_images,
+                )
+
+                items = ctx.recent(gid_echo)
+                cur_prompt = str(
+                    getattr(req, "prompt", "")
+                    or getattr(event, "message_str", "")
+                    or ""
+                )
+                try:
+                    bname = plugin.group_h._bot_name()
+                except Exception:  # noqa: BLE001
+                    bname = ""
+                # 视觉门控：只有对方像是在说刚才那张图时，才把图作为视觉部件再喂一遍；
+                # 纯文本模型直接跳过（避免文案里写了「附带的图片」却没真附上去）。
+                supports_image = not (
+                    isinstance(provider_modalities, list)
+                    and provider_modalities
+                    and "image" not in provider_modalities
+                )
+                want_image = supports_image and image_worth_injecting(user_text)
+                self_images = collect_recent_self_images(items) if want_image else []
+                echo_block = build_recent_echo_block(
+                    items,
+                    bot_name=bname,
+                    current_prompt=cur_prompt,
+                    has_attached_images=bool(self_images),
+                )
+                if echo_block:
+                    parts.append({
+                        "priority": 3, "marker": RECENT_ECHO_MARKER,
+                        "text": echo_block, "name": "群近期动态",
+                        "images": self_images, "elastic": True,
+                    })
+        except Exception as e:  # noqa: BLE001
+            _debug("群近期动态注入失败，本次跳过", e)
+
+        block = build_life_state_block(
+            plugin.cfg,
+            mood=getattr(plugin, "mood", None),
+            motive=motive_hint,
+            session_key=session_key,
+            person=person_block,
+            user_text=user_text,
+            slang=slang_hint,
+        )
+        if block:
+            parts.append({
+                "priority": 1, "marker": MARKER,
+                "text": block, "name": "生活状态",
+            })
+
+        # 统一预算裁剪后再注入（合计不超档位上限；auto 档按模型名自动选档）
+        for part in _fit_budget(parts, inject_budget(plugin.cfg, model_name)):
+            text = str(part.get("text") or "")
+            if not text:
+                continue
+            if not inject_temp_part(req, text, part["marker"]):
+                continue
+            _debug(f"已注入{part['name']}（{len(text)} 字）")
+            images = part.get("images") or []
+            if images:
+                injected = inject_temp_images(
+                    req, images, modalities=provider_modalities
+                )
+                if injected:
+                    _debug(f"已注入自己刚发的 {injected} 张图")
+    except Exception as e:  # noqa: BLE001 - 注入失败不能影响正常回复
+        _debug("生活状态注入异常，本次跳过", e)
 
 
 def inject_life_state(req: Any, block: str) -> bool:

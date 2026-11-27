@@ -11,6 +11,7 @@ private_handler / group_handler / worker_handler / main 的 prompt 与 sender_na
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -48,9 +49,13 @@ class Identity:
         return out
 
     def persona_block(self) -> str:
-        """拼出注入 prompt 的人设文字。
+        """拼出「人设文字」——**只给日程生成 / 元数据提取用**。
 
         优先级：插件专用提示词 > 原人设；之后再接用户补充与生活背景。
+
+        ⚠ 主对话链路（被动回复、主动开口、摸鱼）**不再调用它**：AstrBot 宿主
+        已经把完整人设放进 system_prompt（且能命中 Prefix Cache），插件再拼一遍
+        既重复又容易把人设压成"插件改写版"，破坏细腻语感。
         """
         parts = []
         if self.plugin_prompt:
@@ -308,7 +313,10 @@ async def synthesize_plugin_prompt(
         prompt = PERSONA_SYNTH_PROMPT.format(
             persona=persona_text.strip(), extra=str(extra or "").strip() or "（无）"
         )
-        resp = await prov.text_chat(prompt=prompt, system_prompt="")
+        # 硬超时：中转接口卡死时面板动作会一直挂着，调用方也拿不到错误提示
+        resp = await asyncio.wait_for(
+            prov.text_chat(prompt=prompt, system_prompt=""), timeout=90
+        )
         text = ""
         for key in ("completion_text", "completion", "text", "content"):
             v = getattr(resp, key, None)
@@ -345,6 +353,8 @@ async def synthesize_plugin_prompt(
         # 模型没按 JSON 输出：退化为纯文本，仍写入 prompt
         return {"prompt": text[:2000], "bot_name": "", "user_name": "",
                 "aliases": [], "life_bg": "", "interests": [], "extra_persona": ""}, ""
+    except asyncio.TimeoutError:
+        return None, "模型生成超时（90s），请换更快的模型或稍后重试"
     except Exception as e:
         return None, str(e)[:160]
 

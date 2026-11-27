@@ -54,8 +54,6 @@ SAFE_DELETE: list[str] = [
     "过载的",
     # 神圣
     "神圣的",
-    "虔诚的",
-    "虔诚",
     # 机械
     "机器般",
     # 状态
@@ -72,19 +70,13 @@ SAFE_DELETE: list[str] = [
     "算计的",
     "很诚实地",
     "背德的",
-    "泛白",
-    "发白",
-    "浑浊",
     "发红的",
     "赤红的",
     # 量词
     "一丝",
     "一抹",
-    # 虚词
-    "仿佛",
-    "几乎",
-    "几乎是",
-    "一种",
+    # 注：几乎 / 几乎是 / 仿佛 / 一种 已移除——删了会改意思（「我几乎没睡」→「我没睡」）；
+    #     泛白 / 发白 / 浑浊 能做谓语，删了就是挖洞（「水有点浑浊，」→「水有点，」）
 ]
 
 AGGRESSIVE_DELETE: list[str] = [
@@ -112,24 +104,17 @@ AGGRESSIVE_DELETE: list[str] = [
     "石楠花",
     "肠液",
     "心湖",
-    "共犯",
     "“共犯”",
     "神仙设定",
-    "单片",
-    "指节",
     "七分",
-    "仪式",
-    "眼镜",
     # 动词
     "献祭",
     "膜拜",
     "吞吃入腹",
     "拆吃入腹",
     "低吼",
-    "升华",
     "支配",
     "推了推",
-    "崇拜",
     # 半截话
     "最后一根",
     "总是带着点",
@@ -143,14 +128,9 @@ AGGRESSIVE_DELETE: list[str] = [
     "并不存在的",
     "其实根本",
     "连他",
-    "信徒",
-    "的信徒",
     "啊啊啊",
     "豁……",
     "什……",
-    # 常见词
-    "扭曲",
-    "设定",
 ]
 
 
@@ -202,8 +182,28 @@ ASK_BACK_CLOSING = re.compile(
     r"有什么想法|要不要试试看?)[？?～~…]*$"
 )
 
+# 尾句里带「选项」时不能当反问留客删掉：
+# 「晚上吃火锅还是烧烤，你觉得呢？」删掉等于把正事（问他选哪个）抹了
+_CHOICE_HINT = re.compile(r"还是|或者|或是|选哪|哪个|哪一种")
+
+# ---- 高确定性：掐句首动作旁白（低参数量模型的解说员腔）
+#  只收「我这就去看 / 让我先查查」这类预告句，且必须以句末标点收尾、后面还有正文。
+#  「让我想想」「我先看看你的图，」这类留白的不动，免得删出语病。
+NARRATION_HEAD = re.compile(
+    r"^[\s，,]*(?:"
+    r"我(?:先|这就|马上|立刻)?(?:去|来)?"
+    r"(?:看看|看一下|瞧瞧|查查|查一下|查一查|试试|试一下|确认一下|"
+    r"找找|找一下|翻翻|翻一下|读一下|读读|处理一下|改一下|调整一下|调一下|"
+    r"跑一下|运行一下)"
+    r"|让我(?:先|来)?(?:看看|看一下|瞧瞧|查查|查一下|试试|试一下|确认一下|找找)"
+    r"|稍等(?:一下)?[，,]?\s*我(?:先|这就|来)?"
+    r")[^。！？，,；;\n]{0,10}[。！!～~…]+[\s]*"
+)
+
 # ---- 高确定性：破折号降级（正文内连续破折号 -> 逗号）
-DASH_RUN = re.compile(r"\s*[—–]{2,}\s*|\s*――+\s*")
+# 破折号降级要连全角减号一起认：`－－` 会被标点归一的 DASH_RE 合成 `——`，
+# 只认 [—–] 的话等于「开着降级反而造出破折号」。
+DASH_RUN = re.compile(r"\s*[—–－]{2,}\s*|\s*――+\s*")
 
 # ---- 高风险：只检测，不改写
 RISK_PATTERNS: dict[str, re.Pattern] = {
@@ -248,6 +248,19 @@ def trim_official_head(text: str) -> tuple[str, int]:
     return rest.lstrip(), 1
 
 
+def trim_narration_head(text: str) -> tuple[str, int]:
+    """掐掉句首的动作旁白句（我这就去看看。/ 让我先查查。）；洗完不能为空。"""
+    if not text:
+        return text, 0
+    m = NARRATION_HEAD.match(text)
+    if not m:
+        return text, 0
+    rest = text[m.end():]
+    if not rest.strip():
+        return text, 0  # 整条就是旁白：不洗空
+    return rest.lstrip(), 1
+
+
 def _split_sentences(text: str) -> list[str]:
     """按中文句末标点切句，保留标点。"""
     parts = re.findall(r"[^。！？!?\n]+[。！？!?…～~]*|[。！？!?…～~]+", text)
@@ -265,6 +278,9 @@ def trim_closing_tail(text: str) -> tuple[str, int]:
     if len(sentences) < 2:
         return text, 0
     last = sentences[-1].strip()
+    if ASK_BACK_CLOSING.match(last) and _CHOICE_HINT.search(last):
+        # 「火锅还是烧烤，你觉得呢？」是让对方做选择，不是留客套话
+        return text, 0
     if not (NPC_CLOSING.match(last) or ELEVATE_CLOSING.match(last)
             or ASK_BACK_CLOSING.match(last)):
         return text, 0
@@ -276,7 +292,9 @@ def trim_closing_tail(text: str) -> tuple[str, int]:
 
 def downgrade_dash(text: str) -> tuple[str, int]:
     """正文里的连续破折号降级成逗号（代码/引用已被 vault 保护，不会进来）。"""
-    if not text or "—" not in text and "–" not in text:
+    # 早退必须用 DASH_RUN 本身判断：以前只查 b"—"/b"–"，全角减号 `－－` 会漏出去，
+    # 紧接着标点归一的 DASH_RE 又把它合成 `——`（开着降级反而造出破折号）。
+    if not text or not DASH_RUN.search(text):
         return text, 0
     new, n = DASH_RUN.subn("，", text)
     if n:
@@ -313,6 +331,8 @@ TRIM_RULE_CATALOG = [
      "desc": "句首独立的奉承短句（你说得太对了、一针见血），裁掉但保留正文"},
     {"id": "trim_official_head", "name": "掐公文连接词", "category": "trim",
      "desc": "句首的首先/其次/值得注意的是/总而言之等公文头"},
+    {"id": "trim_narration_head", "name": "掐动作旁白", "category": "trim",
+     "desc": "句首的「我这就去看看」「让我先查查」这类解说员腔预告句"},
     {"id": "trim_closing_tail", "name": "去结案/留客尾句", "category": "trim",
      "desc": "多句回复里最后一句的「行，那就这样」「你觉得呢？」这类收尾"},
     {"id": "downgrade_dash", "name": "破折号降级", "category": "trim",

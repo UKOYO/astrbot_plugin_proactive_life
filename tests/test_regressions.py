@@ -56,9 +56,9 @@ class TestRereadStopsEvent(unittest.TestCase):
     def test_source_calls_stop_event_after_yield(self):
         import inspect
 
-        import astrbot_plugin_proactive_life.main as m
+        from astrbot_plugin_proactive_life.modules import interact_handler
 
-        src = inspect.getsource(m.ProactiveLifePlugin.on_group_reread)
+        src = inspect.getsource(interact_handler.handle_group_reread)
         self.assertIn("chain_result", src)
         self.assertIn("event.stop_event()", src)
         # 复读 yield 之后必须截断事件

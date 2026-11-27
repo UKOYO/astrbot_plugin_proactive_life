@@ -41,6 +41,48 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return [(start, end) for start, end in merged]
 
 
+# 代码围栏 / 行内代码：里面的 `<think>` 之类是**用户要看的内容**（比如让人解释
+# 这个标签、或者示例里写了 `<thinking>` 却没闭合），不能当思考块删掉。
+# 覆盖三种写法：``` 围栏、~~~ 围栏、`行内代码`（含 ``双反引号``）。
+CODE_SPAN_RE = re.compile(
+    r"```[\s\S]*?```"
+    r"|~~~[\s\S]*?~~~"
+    r"|`{1,2}[^`\n]+`{1,2}"
+)
+
+# 掩码占位符：用 NUL 包住，正文里几乎不可能出现
+MASK_TPL = "\x00PLCODE{idx}\x00"
+
+
+def mask_code_spans(text: str) -> tuple[str, list[str]]:
+    """把代码围栏/行内代码换成占位符，返回 (掩码文本, 原文列表)。
+
+    先用 :func:`unmask_code_spans` 还原；掩码后跑任何正则都不会动到代码内容。
+    """
+    spans: list[str] = []
+
+    def _repl(m: "re.Match[str]") -> str:
+        spans.append(m.group(0))
+        return MASK_TPL.format(idx=len(spans) - 1)
+
+    return CODE_SPAN_RE.sub(_repl, text), spans
+
+
+def unmask_code_spans(text: str, spans: list[str]) -> str:
+    """把 :func:`mask_code_spans` 的占位符换回原文。"""
+    for idx, span in enumerate(spans):
+        text = text.replace(MASK_TPL.format(idx=idx), span)
+    return text
+
+
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    return [(m.start(), m.end()) for m in CODE_SPAN_RE.finditer(text)]
+
+
+def _in_spans(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
 def filter_reasoning_text(
     text: str,
     tags: object,
@@ -49,7 +91,10 @@ def filter_reasoning_text(
     unclosed_opening_action: str = "remove_suffix",
     case_sensitive: bool = False,
 ) -> tuple[str, int]:
-    """删除思考标签及其中内容，返回清理后的文本和命中区域数。"""
+    """删除思考标签及其中内容，返回清理后的文本和命中区域数。
+
+    代码围栏内的标签**不处理**（围栏内的内容要原样发给用户）。
+    """
     normalized_tags = normalize_tags(tags)
     if not text or not normalized_tags:
         return text, 0
@@ -62,7 +107,10 @@ def filter_reasoning_text(
         rf"<\s*(/?)\s*({alternatives})(?=\s|/?>)[^>]*>",
         flags,
     )
-    tokens = list(token_pattern.finditer(text))
+    fences = _code_spans(text)
+    tokens = [
+        m for m in token_pattern.finditer(text) if not _in_spans(m.start(), fences)
+    ]
     if not tokens:
         return text, 0
 

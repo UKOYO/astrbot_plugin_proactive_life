@@ -1063,6 +1063,11 @@ body.is-monospaced .sec__head span { font-family: var(--mono); }
 }
 .rule-item__name { opacity: .9; }
 .rule-item__desc { opacity: .5; font-size: 11.5px; }
+.rule-item__tag {
+  font-style: normal; font-size: 10px; padding: 0 4px; margin-left: 4px;
+  border-radius: 4px; opacity: .75;
+  background: rgba(120, 170, 255, .18); color: #9fc4ff;
+}
 .rule-top { display: flex; flex-direction: column; }
 .rule-top__row {
   display: flex; justify-content: space-between; align-items: baseline;
@@ -1139,3 +1144,18 @@ body.is-monospaced .sec__head span { font-family: var(--mono); }
   50%      { opacity: .12; }
 }
 @media (max-width: 900px) { .bg-figure { display: none; } }
+
+/* ---- Token 成本标注 ---- */
+.cost-tag {
+  grid-column: 1 / -1;
+  font-size: var(--t-label);
+  letter-spacing: .06em;
+  opacity: .5;
+  margin-bottom: -4px;
+}
+.cost-tag::before { content: "◇ "; }
+.cost-tag--good { opacity: .45; }
+.cost-tag--good::before { content: "◆ "; }
+
+/* ---- 白名单群标记（v1.5.14） ---- */
+.gname .tag-whitelist { opacity: .75; border-bottom: 1px solid currentColor; }

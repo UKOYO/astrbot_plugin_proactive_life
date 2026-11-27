@@ -11,7 +11,7 @@ from astrbot.core.agent.mcp_client import MCPTool
 from .common import parse_quiet_hours
 from .handler_base import HandlerContextMixin
 from .agent_runner import (
-    build_agent_config, make_request, run_agent,
+    build_agent_config, make_request, run_agent, max_steps_from,
 )
 
 # 摸鱼 agent 用來虛构會話的系統標識（不是任何人的 QQ 號，也不依賴「對誰主動」配置）
@@ -35,7 +35,6 @@ _DEFAULT_EXPLORE_INTENT = """1. **近期热点与新闻**：用可用的联网�
 _WORKER_PROMPT = """【时间与情境】
 - 当前时间：{now_str}
 - 你手头正好闲下来，想上网冲浪、探索、吃瓜或者收集点灵感。
-{persona_block}
 
 【最近已有过的心事/探索记录（严禁重复或同质化选题）】
 {recent_topics}
@@ -47,7 +46,7 @@ _WORKER_PROMPT = """【时间与情境】
 
 【绝对禁忌与输出要求】
 - 严禁死板重复上面【最近已有过的心事】里的任何话题，也不要反复盯着同一个陈旧选题；
-- 必须根据你探索到的真实结果，以第一人称随口写一句你最直观的吐槽、发现或感想（1~2句话，短碎口语，拒绝新闻通稿/客服总结腔）；
+- 必须根据你探索到的真实结果，以第一人称写 1~2 句你最直观的感想或发现，拒绝新闻通稿 / 客服总结腔；
 - 写完后这句心声会自动沉淀进你的心事话题池，作为后续开口的灵感原料。"""
 
 
@@ -72,8 +71,8 @@ class AutonomousWorkerHandler(HandlerContextMixin):
             return _DEFAULT_EXPLORE_INTENT
         mode = str(self.cfg.get("摸鱼_搜索方向_模式", "replace") or "replace").strip().lower()
         if mode == "append":
-            return f"【优先：按主人指定的方向查】\n{custom}\n\n【也别忘了偶尔看看】\n{_DEFAULT_EXPLORE_INTENT}"
-        return f"【按主人指定的方向查，别跑题】\n{custom}"
+            return f"【优先：按指定方向查】\n{custom}\n\n【也别忘了偶尔看看】\n{_DEFAULT_EXPLORE_INTENT}"
+        return f"【按指定方向查，别跑题】\n{custom}"
 
     def _mood_target_keys(self) -> list[str]:
         """摸鱼情绪要落到的真实会话键：优先配置里的主动对象，其次当前群。"""
@@ -141,12 +140,15 @@ class AutonomousWorkerHandler(HandlerContextMixin):
                         tools.add_tool(t)
                 except Exception:
                     continue
-            # 配套抓取工具（跟随 provider）
+            # 配套抓取工具（跟随 provider）：get_builtin_tool 可能返回 None，直接
+            # add_tool(None) 会抛异常把整段内置搜索装配搞挂
             for name in ("tavily_extract_web_page", "firecrawl_extract_web_page",
                          "exa_get_contents", "deepseek_fetch_web_page"):
                 if provider and provider in name:
                     try:
-                        tools.add_tool(tmgr.get_builtin_tool(name))
+                        t = tmgr.get_builtin_tool(name)
+                        if t:
+                            tools.add_tool(t)
                     except Exception:
                         pass
         except Exception as e:
@@ -188,14 +190,11 @@ class AutonomousWorkerHandler(HandlerContextMixin):
     async def _run_work(self, now: datetime) -> bool:
         try:
             # 虚拟一个会话用于跑 agent 链路
-            session = None
-            for inst in self.context.platform_manager.get_insts():
-                pid = getattr(getattr(inst, "metadata", None), "id", None)
-                if pid:
-                    session = MessageSession.from_str(f"{pid}:FriendMessage:{_WORKER_VIRTUAL_UID}")
-                    break
-            if not session:
-                session = MessageSession.from_str(f"aiocqhttp:FriendMessage:{_WORKER_VIRTUAL_UID}")
+            from .common import resolve_umo
+
+            session = MessageSession.from_str(
+                resolve_umo(self.context, "FriendMessage", _WORKER_VIRTUAL_UID)
+            )
 
             now_str = now.strftime("%Y-%m-%d %H:%M")
             recent_topics = ""
@@ -208,7 +207,6 @@ class AutonomousWorkerHandler(HandlerContextMixin):
                 now_str=now_str,
                 recent_topics=recent_topics,
                 explore_intent=self._explore_intent(),
-                persona_block=self._persona_field(),
             )
 
             ev = CronMessageEvent(
@@ -229,12 +227,20 @@ class AutonomousWorkerHandler(HandlerContextMixin):
             req = make_request(prompt, func_tool=func_tool)
             outcome = await run_agent(
                 self.context, ev, req,
-                build_cfg=build_cfg, max_steps=20, total_timeout=300,
+                build_cfg=build_cfg,
+                # 摸鱼才需要多步检索，但 20 步太贵：默认 6 步，面板可调
+                max_steps=max_steps_from(self.cfg, "摸鱼_最大步数", 6),
+                total_timeout=300,
+                clean_cfg=self.cfg,
             )
             if not outcome.ok:
                 logger.debug("proactive_life | 摸鱼未得到有效结果：%s", outcome.reason)
                 return False
             text = outcome.text
+
+            # 冷却按「这一轮真的跑完了」更新：以前写在 len(clean) > 6 里面，
+            # 模型输出过短时不更新，下一轮调度立刻又跑一遍摸鱼烧 Token。
+            self.last_work_time = time.time()
 
             # 沉淀到共享动机池
             if self.motive_mgr:
@@ -252,12 +258,11 @@ class AutonomousWorkerHandler(HandlerContextMixin):
                     self._log_activity("worker", f"摸鱼沉淀（{m_scope}）：{clean[:24]}")
                     # 摸到有意思的东西，情绪会兴奋一点。
                     # 注意：不能写 "system_worker"——那个键没有任何读取方，等于白写。
+                    # 也不能 break：多目标时只有第一个人能拿到情绪。
                     for key in self._mood_target_keys():
                         self._mood_apply(key, "explored", "摸鱼有收获")
-                        break
-
-                    self.last_work_time = time.time()
                     return True
+            return False
         except Exception as e:
             logger.warning("proactive_life | 自主探索执行异常: %s", e)
             return False

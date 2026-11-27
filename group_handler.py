@@ -14,7 +14,7 @@ from .group_mute import (
 )
 from .group_prompt import GroupPromptMixin
 from .agent_runner import (
-    build_agent_config, make_request, attach_history, run_agent,
+    build_agent_config, make_request, attach_history, run_agent, max_steps_from,
 )
 from .context_scene import (
     SceneAnalyzer, SceneGenerator, SceneTracker, SummaryStore,
@@ -42,6 +42,15 @@ _MAIN_AGENT_OK = _BREAK_IMPORT_OK and AGENT_AVAILABLE
 
 # 模型插话判定（只回 YES/NO）的硬超时；中转接口卡死时不能拖住整条被动链路
 _JUDGE_TIMEOUT_SEC = 15.0
+
+
+def _as_prob(value: Any, default: float) -> float:
+    """把配置里的概率值安全转成 float（脏值回落默认，不抛）。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
 
 class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixin):
     def __init__(self, context, cfg: dict, motive_mgr):
@@ -121,7 +130,6 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
             self._miss_streak,
             self._user_spoke_after,
             self._diag_stamp,
-            self._muted_until,
             self._mute_judge_at,
         )
 
@@ -139,6 +147,15 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
         for table in self._origin_caches():
             for origin in [o for o in table if o in dead]:
                 table.pop(origin, None)
+
+        # 静默表单独按「到期」清，不能跟着「群里没动静」一起清：
+        # 以前它挂在 _origin_caches 里，群 24 小时没消息就会把仍在生效的
+        # 闭嘴记录顺手删掉，等于提前解禁（群友刚喊完闭嘴，第二天又开始接话）。
+        for key in [
+            k for k, until in self._muted_until.items()
+            if float(until or 0) <= now
+        ]:
+            self._muted_until.pop(key, None)
 
         # 场景/总结/成员印象也要按「24h 未活跃」清理，不能只在超过 300 群时才做，
         # 否则长期只加新群但总量不超限时这些表只增不减。
@@ -194,6 +211,9 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
             st = str(self.cfg.get("日程生成时间", "00:00") or "00:00")
             info = read_schedule(st)
             bits = []
+            appearance = str(self.cfg.get("日程_外观锚点", "") or "").strip()
+            if appearance:
+                bits.append(f"固定外观（不随穿搭变化）：{appearance}")
             if info.get("outfit"):
                 bits.append(f"今日穿搭：{info['outfit']}")
             if info.get("current_activity"):
@@ -373,13 +393,70 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
 
         return [x for x in ids if x]
 
-    def _get_whitelist_boost(self, gid: str) -> float:
-        """白名单群的概率加成倍数，不在名单里的返回 1.0"""
+    def _is_whitelisted(self, gid: str) -> bool:
+        """这个群在不在群聊白名单里（支持 "platform:GroupMessage:gid" 写法）。"""
+        target = str(gid or "").strip()
+        if not target:
+            return False
         for tok in self._parse_whitelist(self.cfg.get("群聊白名单") or []):
             g = tok.split(":")[-1] if ":" in tok else tok
-            if g and g == str(gid):
-                return float(self.cfg.get("群聊白名单_概率倍数", 2.5))
-        return 1.0
+            if g and g.strip() == target:
+                return True
+        return False
+
+    def _icebreak_prob_for(self, gid: str) -> float:
+        """该群实际的破冰概率。
+
+        优先级：独立分区覆盖 > 白名单专属概率 > 默认概率。
+
+        以前白名单只是「默认概率 × 倍数」：默认概率设成 0 时白名单群也一起被
+        乘成 0，「只让白名单群开口」这个诉求根本做不到。现在两者彻底分开。
+        """
+        default_prob = _as_prob(self.cfg.get("群聊自发破冰概率", 0.35), 0.35)
+        prob = _as_prob(
+            self._get_group_custom_param(gid, "破冰概率", default_prob), default_prob
+        )
+        if abs(prob - default_prob) < 1e-9 and self._is_whitelisted(gid):
+            prob = _as_prob(self.cfg.get("群聊白名单_破冰概率", 0.6), 0.6)
+        return max(0.0, min(1.0, prob))
+
+    def _chitchat_prob_for(self, gid: str) -> float:
+        """该群实际的插话概率（同样的三级优先级）。"""
+        default_prob = _as_prob(self.cfg.get("群聊插话_概率", 0.05), 0.05)
+        prob = _as_prob(
+            self._get_group_custom_param(gid, "插话概率", default_prob), default_prob
+        )
+        if abs(prob - default_prob) < 1e-9 and self._is_whitelisted(gid):
+            prob = _as_prob(self.cfg.get("群聊白名单_插话概率", 0.15), 0.15)
+        return max(0.0, min(1.0, prob))
+
+    def _group_engaged(self, gid: str) -> bool:
+        """这个群有没有可能被「主动开口」（破冰 / 插话 / 命中词）。
+
+        全都不会开口的群，插件不建上下文缓存、不攒短期总结、不写诊断日志：
+        1) 省 Token —— 背景总结本身就是一次模型调用；
+        2) 有界的活动日志与面板群列表只留真正会开口的群，不会被一堆潜水群刷掉。
+        """
+        gid = str(gid or "").strip()
+        if not gid:
+            return False
+        # 命中词唤醒：显式点名，算「会开口」
+        try:
+            if bool(self.cfg.get("群聊命中词_启用", True)):
+                raw = self.cfg.get("群聊命中词_关键词") or []
+                if isinstance(raw, str):
+                    raw = raw.replace("，", ",").split(",")
+                if any(str(x).strip() for x in raw):
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        # 破冰只对「白名单 ∪ 独立分区」生效
+        if bool(self.cfg.get("群聊自发破冰_启用", True)):
+            if gid in set(self._get_target_group_ids()) and self._icebreak_prob_for(gid) > 0:
+                return True
+        if bool(self.cfg.get("群聊插话_启用", False)) and self._chitchat_prob_for(gid) > 0:
+            return True
+        return False
 
     def _get_group_custom_param(self, gid: str, param_key: str, default_val: Any) -> Any:
         partitions = self.cfg.get("群聊独立分区配置") or []
@@ -415,6 +492,32 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
         # 刷新群活跃时间戳
         origin = event.unified_msg_origin
         now = time.time()
+        raw = (event.message_str or "").strip()
+        sender = event.get_sender_name() or str(event.get_sender_id())
+
+        # 字面「闭嘴 / 嫌烦」判定必须在「不会主动开口的群」早退**之前**：
+        # 只开了跟读模块的群被喊闭嘴时，也要能写入静默让跟读停下来。
+        try:
+            if is_mute_request(raw, self._id().all_names):
+                minutes = float(self.cfg.get("群聊插话_闭嘴静默分钟", 15.0) or 0)
+                self._mute_group(origin, minutes, sender)
+                return
+            if is_annoyed_signal(raw):
+                minutes = float(self.cfg.get("群聊插话_嫌烦静默分钟", 8.0) or 0)
+                self._mute_group(origin, minutes, sender)
+                return
+        except Exception as e:  # noqa: BLE001 - 静默判定失败不影响后续
+            logger.debug("proactive_life | 静默判定异常，按未命中继续: %s", e)
+
+        # 不会主动开口的群：不建缓存、不攒短期总结（那是一次模型调用）、
+        # 不写诊断。否则面板群列表与活动日志会被一堆潜水群刷满。
+        try:
+            from .common import canonical_group_key
+
+            if not self._group_engaged(canonical_group_key(origin)):
+                return
+        except Exception:  # noqa: BLE001 - 判定失败按原行为继续
+            pass
         self._active_stamp[origin] = now
         # 群友说话了，下一条 Bot 的发言才算接了一轮
         self._user_spoke_after[origin] = True
@@ -454,9 +557,6 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
         # 否则高密度群里 30 秒才掷一次骰，999+ 条消息也只累积了十几次，补偿永远抬不起来
         self._miss_streak[origin] = self._miss_streak.get(origin, 0) + 1
 
-        # 录入最近群聊上下文
-        raw = (event.message_str or "").strip()
-
         # 带链接的卡片推送连上下文都不进，免得后面顺着标题接话
         if _URL_RE.search(raw) or "[cq:json" in raw.lower():
             return
@@ -464,20 +564,7 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
         if is_legacy_command(raw):
             return
 
-        # 有人喊闭嘴就静默一段时间，连上下文都不用往里塞
-        sender = event.get_sender_name() or str(event.get_sender_id())
-
-        # 字面命中，直接静默
-        if is_mute_request(raw, self._id().all_names):
-            minutes = float(self.cfg.get("群聊插话_闭嘴静默分钟", 15.0) or 0)
-            self._mute_group(origin, minutes, sender)
-            return
-
-        # 软性嫌烦信号（你好烦/别刷屏/吵死了等）：短静默，学会看脸色
-        if is_annoyed_signal(raw):
-            minutes = float(self.cfg.get("群聊插话_嫌烦静默分钟", 8.0) or 0)
-            self._mute_group(origin, minutes, sender)
-            return
+        # 字面「闭嘴 / 嫌烦」在上面已经判过（要在早退之前），这里只处理"交给模型判"
 
         # 字面没中，但她刚开过口、这句又短，交给模型判一次意思
         if self._should_judge_mute(origin, raw):
@@ -572,16 +659,26 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
         return True
 
     def _diag(self, origin: str, msg: str):
-        """群插话诊断日志：每群 10 分钟最多一条，用来定位到底卡在哪个判定条件"""
+        """群插话诊断日志：每群 10 分钟最多一条，用来定位到底卡在哪个判定条件。"""
         if not bool(self.cfg.get("群聊插话_诊断日志", True)):
             return
+        # 不会主动开口的群不写诊断：日志是给「该开口却没开口」的群排查用的，
+        # 潜水群刷进来只会把真正有问题的群顶掉。
+        try:
+            from .common import canonical_group_key
+
+            if not self._group_engaged(canonical_group_key(origin)):
+                return
+        except Exception:  # noqa: BLE001
+            pass
         now = time.time()
         if now - self._diag_stamp.get(origin, 0.0) < 600:
             return
         self._diag_stamp[origin] = now
         logger.info("proactive_life | 群插话诊断 [%s] %s", origin, msg)
 
-    # 说话的分寸感：少喊人设口号，像真人一样知道什么时候该说、该怎么说
+    # 说话的分寸感：只写行为底线（该不该开口、别抢答），
+    # 语气/口癖/句长/标点一律交给人设，插件不示范怎么写。
     _GUARDRAIL = (
         "【说话的分寸】\n"
         "- 真的有话想说才开口。只是在场、听大家聊、没想法的时候，安静待着就很正常，"
@@ -590,8 +687,6 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
         "聊得热络、在开玩笑、话题你真有兴趣时，随口搭一句才自然。\n"
         "- 别重复别人刚说过的话，也别当复读机或总结腔。接的是话头里的梗或情绪，不是把上一句换个说法再说一遍。\n"
         "- 不知道就说不知道，别编。没听过的事随口吐槽一句就行，别装懂。\n"
-        "- 形似真人单手打字：短、碎、口语。一个语气词（「啊」「草」「啊这」「哈哈」）、"
-        "一句吐槽、一个附和，都算正常的回应，不必凑成一整段。句末不用句号。\n"
         "- 不写客服腔、不写老妈子说教、不在尾巴硬加反问句留客。说完就说完。\n"
         "- 带链接的消息基本是别的 bot 在发推送，当没看见，不点开不复述。"
     )
@@ -633,7 +728,9 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
             self._diag(origin, "上下文太薄，先不插话")
             return None
         if self._is_muted(origin):
-            left = int(self._muted_until.get(origin, 0) - time.time())
+            from .common import canonical_group_key
+
+            left = int(self._muted_until.get(canonical_group_key(origin), 0) - time.time())
             self._diag(origin, f"静默中 剩{max(left, 0)}s")
             return None
         return msg_str
@@ -748,12 +845,11 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
                 self._diag(origin, "模型判定潜水")
             return should_reply, reply_reason, is_responding_to_bot
 
-        default_prob = float(self.cfg.get("群聊插话_概率", 0.05))
-        base_prob = float(self._get_group_custom_param(gid, "插话概率", default_prob))
-        if abs(base_prob - default_prob) < 1e-9:
-            base_prob = min(base_prob * self._get_whitelist_boost(gid), 0.60)
+        # 三级优先级：独立分区覆盖 > 白名单专属概率 > 默认概率
+        base_prob = self._chitchat_prob_for(gid)
         if base_prob <= 0:
-            self._diag(origin, "该群概率为 0，静音")
+            # 这个群本来就不主动开口：连诊断都不写，免得刷掉真正会开口的群
+            logger.debug("proactive_life | 群插话概率为 0，跳过 [%s]", origin)
             return False, reply_reason, is_responding_to_bot
 
         final_prob = self._calculate_chitchat_prob(base_prob, msg_str)
@@ -795,20 +891,36 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
         raw_msg = (event.message_str or "").strip()
         now = time.time()
 
+        # @Bot / 唤醒词的消息已由框架原生链路回复一次，这里必须让路，否则双回复。
+        # **必须在命中词判定之前**：命中词判定有副作用（锁 20 秒冷却、清零饥饿计数），
+        # 让注定要丢弃的消息触发它，等于白白锁掉一次命中词机会。
+        if getattr(event, "is_at_or_wake_command", False):
+            return
+
+        # 前置过滤（链接/卡片/旧指令/静默期）同样先跑：这些消息不会接话，
+        # 更不该消耗命中词冷却
+        filtered = self._keyword_filter(event, origin)
+        if filtered is None:
+            return
+
         # 0. 命中词唤醒：这是「被点名」，不该被插话开关挡掉
         kw_hit = self._keyword_wakeup(origin, raw_msg, now)
         if not kw_hit and not bool(self.cfg.get("群聊插话_启用", False)):
             return
 
-        # @Bot / 唤醒词的消息已由框架原生链路回复一次，这里必须让路，否则双回复
-        if getattr(event, "is_at_or_wake_command", False):
-            return
+        # 这个群既不会破冰、也不会插话、也没有命中词：整条被动链路都不进，
+        # 免得留下缓存/诊断/面板条目（命中词唤醒不受影响，见上一步）
+        if not kw_hit:
+            try:
+                from .common import canonical_group_key
 
-        # 命中词唤醒时放宽前置过滤：仍挡链接与静默
-        msg_str = (
-            self._keyword_filter(event, origin) if kw_hit
-            else self._passive_filter(event, origin)
-        )
+                if not self._group_engaged(canonical_group_key(origin)):
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 命中词：用放宽后的文本；普通消息：再走被动接话的完整过滤（上下文太薄等）
+        msg_str = filtered if kw_hit else self._passive_filter(event, origin)
         if msg_str is None:
             return
 
@@ -902,6 +1014,13 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
 
         now_ts = time.time()
         for gid in target_gids:
+            # 这个群破冰概率为 0（比如白名单里但白名单概率填了 0）：
+            # 直接跳过，连 _active_stamp 都不登记——不开口的群不该出现在
+            # 面板群列表里，也不该挤占真正会开口的群的位置。
+            icebreak_prob = self._icebreak_prob_for(gid)
+            if icebreak_prob <= 0:
+                continue
+
             origin = None
             for o in self._active_stamp.keys():
                 if o.endswith(f":{gid}"):
@@ -909,11 +1028,9 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
                     break
 
             if not origin:
-                for inst in self.context.platform_manager.get_insts():
-                    pid = getattr(getattr(inst, "metadata", None), "id", None)
-                    if pid:
-                        origin = f"{pid}:GroupMessage:{gid}"
-                        break
+                from .common import resolve_umo
+
+                origin = resolve_umo(self.context, "GroupMessage", gid)
             if not origin:
                 continue
 
@@ -932,9 +1049,6 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
 
             if silent_min < need_silent:
                 continue
-
-            default_prob = float(self.cfg.get("群聊自发破冰概率", 0.35))
-            icebreak_prob = float(self._get_group_custom_param(gid, "破冰概率", default_prob))
 
             if random.random() > icebreak_prob:
                 continue
@@ -999,7 +1113,10 @@ class GroupProactiveHandler(HandlerContextMixin, GroupMuteMixin, GroupPromptMixi
             await attach_history(self.context, req, origin, create_if_missing=True)
             outcome = await run_agent(
                 self.context, ev, req,
-                build_cfg=build_cfg, max_steps=15, total_timeout=240,
+                build_cfg=build_cfg,
+                max_steps=max_steps_from(self.cfg, "主动_最大步数", 5),
+                total_timeout=240,
+                clean_cfg=self.cfg,
             )
             if not outcome.ok:
                 logger.debug("proactive_life | 群破冰未得到有效回复：%s", outcome.reason)

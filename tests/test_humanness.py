@@ -90,13 +90,14 @@ class TestContinuity(unittest.TestCase):
         self.assertNotIn("此刻心情", block2)
 
     def test_main_uses_sender_id_for_private(self):
-        """确认 main.py 私聊分支取的是 sender_id 而不是 umo。"""
+        """确认私聊取的是 sender_id 而不是 umo（Key 归一化已收到 common）。"""
         import inspect
 
-        import astrbot_plugin_proactive_life.main as m
+        from astrbot_plugin_proactive_life import common
 
-        src = inspect.getsource(m.ProactiveLifePlugin.on_life_state_llm_request)
+        src = inspect.getsource(common.canonical_session_key)
         self.assertIn("get_sender_id()", src)
+        self.assertIn("is_private_chat()", src)
 
 
 class TestPersonalitySliders(unittest.TestCase):

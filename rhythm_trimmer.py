@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import random
 import re
 from typing import Tuple, List
 
@@ -34,6 +35,33 @@ LONG_TEXT_HARD_CAP = 20
 
 # 逗号/空格切分时，短于这个字数的碎片不单独成段
 MIN_CHUNK = 6
+
+
+# 拟真停顿的上下限（秒）：太短看不出在打字，太长像卡住
+PAUSE_MIN = 0.35
+PAUSE_MAX = 2.5
+# 每多一个字多停多久：模拟手机九宫格越打越慢
+PAUSE_PER_CHAR = 0.035
+
+
+def human_pause(base_gap: float, seg: str, rng: random.Random | None = None) -> float:
+    """按下一条气泡的字数算一个拟真停顿。
+
+    以前所有气泡都用同一个固定间隔，3 字短句和 40 字长句停顿一样长，
+    节奏很机械。这里按字数线性加时并叠一点随机抖动，再钳到
+    [PAUSE_MIN, PAUSE_MAX]。``base_gap <= 0`` 由调用方负责跳过（0 = 不等待）。
+    """
+    try:
+        base = float(base_gap)
+    except (TypeError, ValueError):
+        base = 0.2
+    r = rng or random
+    try:
+        jitter = r.uniform(-0.1, 0.2)
+    except Exception:  # noqa: BLE001 - 测试里传进来的假 rng 可能没有 uniform
+        jitter = 0.0
+    delay = base + len(str(seg or "")) * PAUSE_PER_CHAR + jitter
+    return max(PAUSE_MIN, min(PAUSE_MAX, delay))
 
 
 def has_markdown(text: str) -> bool:
@@ -75,10 +103,14 @@ def strip_faces(text: str) -> Tuple[str, int]:
 
 
 def strip_trailing_punct(text: str) -> Tuple[str, int]:
-    """去掉整段末尾的 句号/感叹号/波浪号（问号保留）。"""
+    """去掉整段末尾的 句号/感叹号/波浪号/逗号/顿号/分号（问号保留）。
+
+    逗号也要去掉：按行或按句拆成气泡后，段尾还挂着一个「，」很像机器输出
+    （模型逐行自我介绍时最扎眼：「我是混元，」「Tencent Hunyuan Hy,」）。
+    """
     n = 0
     out = text.rstrip()
-    while out and out[-1] in "。！!.～~":
+    while out and out[-1] in "。！!.～~，,、；;":
         out = out[:-1].rstrip()
         n += 1
     return out, n

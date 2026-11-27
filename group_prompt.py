@@ -25,6 +25,28 @@ class GroupPromptMixin:
         except Exception:
             return False
 
+    def _model_tier(self, origin: str = "") -> str:
+        """当前会话模型档位（auto 时按模型名猜，取不到按 full）。
+
+        origin 必须透传：群里给某个群单独指定了轻量模型（如 gemini-flash）而
+        全局默认是强模型时，不传 origin 会拿到全局默认模型，该群就不会拍平。
+        """
+        name = ""
+        try:
+            from .common import get_chat_provider
+
+            prov = get_chat_provider(self.context, origin or None)
+            if prov is not None:
+                name = str(prov.get_model() or "")
+        except Exception:  # noqa: BLE001
+            name = ""
+        try:
+            from .life_inject import resolve_model_tier
+
+            return resolve_model_tier(self.cfg, name)
+        except Exception:  # noqa: BLE001
+            return "full"
+
     def _build_scene_block(self, origin: str) -> str:
         """用场景感知生成 <conversation_scene>；失败时回空串（降级不影响接话）。"""
         if not self._module_on("上下文"):
@@ -63,6 +85,8 @@ class GroupPromptMixin:
             scene = self._scene_gen.generate(
                 trigger, desc, current, window[:-1],
                 show_flow=show_flow, summary=summary_text, member_note=member_note,
+                # lite 档（含 auto 命中 flash/mini 等）：场景拍平成两行纯文本
+                flat=self._model_tier(origin) == "lite",
             )
             # 保存快照：面板用它展示「最近一次注入的上下文」
             self._last_scene[origin] = {
@@ -118,22 +142,27 @@ class GroupPromptMixin:
         else:
             attitude = "乐于搭话，看到消息就自然接一句，别让人觉得你冷淡。"
 
-        # 吐槽强度：影响语气
+        # 吐槽强度：40~60 是默认区间——**不注入任何语气指令**，
+        # 免得插件的人设口径盖过用户自己写的人设。
         if snark >= 75:
             tone = "嘴毒一点，爱吐槽抖机灵，但也别真伤人——玩笑式吐槽，不是攻击。"
-        elif snark >= 50:
+        elif snark > 60:
             tone = "可以随口吐槽、带点调侃，语气轻松不认真说教。"
+        elif snark >= 40:
+            tone = ""
         elif snark >= 25:
             tone = "温和吐槽就好，以附和、认同为主，偶尔调侃一句。"
         else:
             tone = "温和友善，以附和、鼓励为主，避免任何可能让人不舒服的调侃。"
 
-        return (
-            "【说话风格（按这组参数来，优先级高于一般客套）】\n"
-            f"- 篇幅：{length}\n"
-            f"- 开口意愿：{attitude}\n"
-            f"- 语气：{tone}"
-        )
+        lines = [
+            "【介入意愿与篇幅参考（具体语气、口癖、标点与格式严格以系统人设为准）】",
+            f"- 篇幅：{length}",
+            f"- 开口意愿：{attitude}",
+        ]
+        if tone:
+            lines.append(f"- 语气：{tone}")
+        return "\n".join(lines)
 
     def _build_passive_prompt(
         self, origin: str, msg_str: str, is_responding_to_bot: bool, current_sender: str
@@ -146,17 +175,26 @@ class GroupPromptMixin:
         scene = self._build_scene_block(origin)
         mood_part = self._mood_hint(origin)
 
-        # 反应方式多样性 + 拟人参数（话多/沉默/吐槽）共同决定怎么说
+        # 反应方式多样性 + 拟人参数（话多/沉默/吐槽）共同决定怎么说。
+        # 这里只给「介入意愿」，不示范任何具体口癖（口癖属于人设）。
         reaction_hint = (
             "怎么回应自己挑，别每次都一个样：\n"
-            "- 好笑的：接梗、抖一句、跟着哈哈；\n"
-            "- 有同感的：附和一句，站队或吐槽，不用长篇；\n"
-            "- 有看法的：说句真心话或主观吐槽，说完就停；\n"
-            "- 没啥好说的：一句语气词（啊 / 草 / 啊这 / 嗯），或按下面的沉默倾向处理。\n\n"
+            "- 好笑的：顺着这个梗接一句；\n"
+            "- 有同感的：附和或吐槽一句，不用长篇；\n"
+            "- 有看法的：说句真心话，说完就停；\n"
+            "- 没啥好说的：给个很短的回应，或按下面的沉默偏好处理。\n\n"
             + self._persona_hint()
         )
 
         scene_part = ((scene + "\n\n") if scene else "") + mood_part
+        # 群接话不走被动注入；只有这条消息本身在盘问身份时才补身份锚定
+        try:
+            from .modules.identity_guard import guard_for_text
+
+            guard = guard_for_text(self.cfg, self._bot_name(), msg_str)
+            identity = f"\n{guard}" if guard else ""
+        except Exception:
+            identity = ""
         if is_responding_to_bot:
             bot_last_words = self._recent_bot_spoke.get(origin, {}).get("text", "")
             return (
@@ -164,14 +202,14 @@ class GroupPromptMixin:
                 f"你刚才在群里说的是：「{bot_last_words}」\n"
                 f"{current_sender} 接着说：{msg_str}\n\n"
                 f"{reaction_hint}\n\n"
-                f"{self._GUARDRAIL}\n\n"
+                f"{self._GUARDRAIL}{identity}\n\n"
                 f"他在接你的话。像真人一样自然回一句就行，不用解释、不用报幕。"
             )
         return (
             scene_part +
             f"{current_sender} 刚说：{msg_str}\n\n"
             f"{reaction_hint}\n\n"
-            f"{self._GUARDRAIL}\n\n"
+            f"{self._GUARDRAIL}{identity}\n\n"
             f"你在旁边看聊天，挑一个此刻最自然的反应说出来，哪怕只是一个语气词。"
             f"先看清场景提示：如果这条明显是在跟别人说话，别抢答。"
             f"只输出要说的话本身。"

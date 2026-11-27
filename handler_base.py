@@ -79,6 +79,20 @@ class HandlerContextMixin:
         except Exception:
             return True
 
+    @staticmethod
+    def _mood_key(key: str) -> str:
+        """情绪 Key 归一：群 origin 收敛成裸群号，私聊 uid 原样。
+
+        群聊写入端拿的是 origin（``platform:GroupMessage:gid``），读取端
+        （被动注入 / 面板）拿的是裸群号，不归一就永远读不到。
+        """
+        try:
+            from .common import canonical_group_key
+
+            return canonical_group_key(key)
+        except Exception:
+            return str(key or "")
+
     def _mood_hint(self, key: str) -> str:
         """返回带换行的情绪提示，供拼进 prompt；无情绪时返回空串。"""
         if not self._mood_on():
@@ -87,7 +101,7 @@ class HandlerContextMixin:
         if store is None:
             return ""
         try:
-            hint = store.hint(str(key))
+            hint = store.hint(self._mood_key(key))
             return (hint + "\n") if hint else ""
         except Exception:
             return ""
@@ -99,6 +113,6 @@ class HandlerContextMixin:
         if store is None:
             return
         try:
-            store.apply(str(key), event, reason)
+            store.apply(self._mood_key(key), event, reason)
         except Exception:
             pass

@@ -98,7 +98,12 @@ class TestPolishFalsePositiveGuards(unittest.TestCase):
     def _p(self):
         from astrbot_plugin_proactive_life.modules.prose_polish import ProsePolisher
 
-        return ProsePolisher({"清AI八股": True, "演练模式": False})
+        # full 档：这一组测的是规则本身的误伤防护，需要改写真的发生
+        return ProsePolisher({
+            "清AI八股": True, "演练模式": False,
+            "清洗档位": "full", "改句式": True, "换词": True,
+            "删八股短语": True, "水词配额": 1,
+        })
 
     def test_shifen_number_time_preserved(self):
         p = self._p()

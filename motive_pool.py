@@ -5,12 +5,20 @@ from typing import Optional, Dict, Any
 
 
 class MotiveManager:
+    # 被动闲聊的频控：同一条心事最多递几次、两次之间至少隔多久。
+    # 以前每轮都把同一条塞给模型，只要私聊主动没消费它，模型就会连着几轮
+    # 反复提同一件事，像卡带。
+    PASSIVE_MAX_SHOWN = 2
+    PASSIVE_COOLDOWN_SEC = 1800.0
+
     def __init__(self, storage_path: Path):
         self.storage_path = storage_path
         # 被动回复热路径要读「最近一条未消费心事」，每次都读盘会抖，
         # 这里用 (mtime, size) 做失效判断的内存缓存。
         self._peek_cache: Optional[Dict[str, Any]] = None
         self._peek_stamp: tuple = ()
+        # 被动提示计数（只在内存里，重启清零；不影响 private_used 的持久语义）
+        self._passive_stats: Dict[str, Dict[str, float]] = {}
 
     def _load_data(self) -> Dict[str, Any]:
         from .safe_io import sync_read_json
@@ -44,6 +52,66 @@ class MotiveManager:
             text = str(m.get("content") or "").strip()
             if text:
                 return text
+        return ""
+
+    def list_motives(self, limit: int | None = None) -> list[Dict[str, Any]]:
+        """只读列出心事（带文件戳缓存）。
+
+        面板每 4 秒轮询一次状态，直接 ``_load_data()`` 就是每 4 秒一次磁盘读；
+        这里复用 peek 的 (mtime_ns, size) 缓存，文件没变就不读盘。
+        """
+        try:
+            st = self.storage_path.stat()
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = ()
+        if self._peek_cache is None or stamp != self._peek_stamp:
+            self._load_data()
+        data = self._peek_cache or {}
+        pool = [m for m in (data.get("motives") or []) if isinstance(m, dict)]
+        if limit is not None and limit > 0:
+            return pool[-limit:]
+        return pool
+
+    def peek_passive_hint(
+        self,
+        max_shown: int | None = None,
+        cooldown_sec: float | None = None,
+        now: float | None = None,
+    ) -> str:
+        """被动闲聊用的心事提示：带频控，避免连续几轮复读同一条。
+
+        规则（都可覆盖）：同一条最多递 ``PASSIVE_MAX_SHOWN`` 次，两次之间
+        至少隔 ``PASSIVE_COOLDOWN_SEC``。计数只在内存里，重启清零；
+        真正的「已消费」仍由 ``private_used`` 负责。
+        """
+        cap = int(self.PASSIVE_MAX_SHOWN if max_shown is None else max_shown)
+        gap = float(self.PASSIVE_COOLDOWN_SEC if cooldown_sec is None else cooldown_sec)
+        ts = time.time() if now is None else float(now)
+        try:
+            st = self.storage_path.stat()
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = ()
+        if self._peek_cache is None or stamp != self._peek_stamp:
+            self._load_data()
+        data = self._peek_cache or {}
+        for m in reversed(data.get("motives") or []):
+            if not isinstance(m, dict) or m.get("private_used", False):
+                continue
+            text = str(m.get("content") or "").strip()
+            if not text:
+                continue
+            key = str(m.get("id") or text[:40])
+            stat = self._passive_stats.get(key) or {}
+            shown = int(stat.get("count", 0) or 0)
+            if shown >= cap:
+                continue
+            last = float(stat.get("last", 0) or 0)
+            if last and (ts - last) < gap:
+                continue
+            self._passive_stats[key] = {"count": shown + 1, "last": ts}
+            return text
         return ""
 
     def _save_data(self, data: Dict[str, Any]) -> None:

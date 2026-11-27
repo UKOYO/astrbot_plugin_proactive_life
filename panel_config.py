@@ -1,7 +1,8 @@
 """面板配置：读取/写入配置、构造下拉选项、类型强制转换。
 
-从 web_api.py 拆出，不改变任何行为。EDITABLE 白名单保留在 web_api.py，
-通过模块级函数注入，避免两处重复定义。
+从 web_api.py 拆出，不改变任何行为。EDITABLE 白名单现在由
+`config_defaults.schema_types()` 从 `_conf_schema.json` 自动生成，
+不再手抄一份 178 行的键名+类型表。
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from typing import Any
 from astrbot.api import logger
 
 from . import name_resolver
+from .config_defaults import schema_types
 
 
 
@@ -24,195 +26,9 @@ async def _persona_options(plugin) -> list[dict]:
         return [{"value": "", "label": "跟随 AstrBot 默认人设"}]
 
 # 面板上允许修改的配置项 -> 期望类型。不在表里的配置项一律拒绝。
-EDITABLE: dict[str, type] = {
-    "拟人_跨会话记忆": bool,
-    "拟人_说话方式约束": bool,
-    "拟人_说话方式强度": str,
-    "拟人_说话方式补充": str,
-    "拟人_情绪落盘": bool,
-    "拟人_情绪注入被动": bool,
-    "心事_被动注入": bool,
-    "生活状态_总字数上限": int,
-    # 角色身分
-    "角色_AstrBot人设": str,
-    "角色_插件提示词模型": str,
-    "角色_插件专用提示词": str,
-    "角色_自动读取AstrBot人设": bool,
-    "角色_Bot自称": str,
-    "角色_对方称呼": str,
-    "角色_备用称呼": list,
-    "角色_生活背景": str,
-    "角色_兴趣关键词": list,
-    "角色_额外人设": str,
-    # 模块级总开关（放在最前，保证每个分栏里它是第一项）
-    "模块_私聊": bool,
-    "模块_群聊": bool,
-    "模块_摸鱼": bool,
-    "模块_节奏": bool,
-    "模块_日程": bool,
-    "模块_上下文": bool,
-    "模块_防抖": bool,
-    "戳一戳_上下文条数": int,
-    "戳一戳_上下文秒数": int,
-    "戳一戳_收录自己发言": bool,
-    "戳一戳_后续合并": bool,
-    "戳一戳_纯艾特等待秒": int,
-    "戳一戳_纯艾特回应": bool,
-    "戳一戳_个人冷却秒": int,
-    "戳一戳_群冷却秒": int,
-    "戳一戳_反戳": bool,
-    "戳一戳_回应概率": float,
-    "戳一戳_纯艾特概率": float,
-    "跟读_阈值": int,
-    "跟读_最小间隔秒": int,
-    "跟读_概率": float,
-    "跟读_屏蔽词": list,
-    "出站_思考标签": list,
-    "出站_裸思考过滤": bool,
-    "出站_孤闭合处理": str,
-    "出站_未闭合处理": str,
-    "出站_思考标签大小写敏感": bool,
-    "出站_空回复兜底": str,
-    "出站_修剪空白": bool,
-    "出站_压缩空行": bool,
-    "出站_八股_清AI八股": bool,
-    "出站_八股_改句式": bool,
-    "出站_八股_换词": bool,
-    "出站_八股_删八股短语": bool,
-    "出站_八股_激进删词": bool,
-    "出站_八股_水词配额": int,
-    "出站_八股_合并碎句": bool,
-    "出站_八股_碎句阈值": int,
-    "出站_八股_删结尾升华": bool,
-    "出站_八股_保护细节块": bool,
-    "出站_八股_保护代码表格": bool,
-    "出站_八股_保护引号台词": bool,
-    "出站_八股_禁用规则": list,
-    "出站_八股_演练模式": bool,
-    "模块_天气": bool,
-    "天气_城市": str,
-    "黑话_自动解析": bool,
-    "黑话_解析模型": str,
-    "模块_黑话": bool,
-    "黑话_最小命中": int,
-    "黑话_最多条数": int,
-    "黑话_只注入已解析": bool,
-    "模块_黑名单": bool,
-    "模块_黑名单_ID": list,
-    "模块_黑名单_批量文本": str,
-    "模块_黑名单_拦主动": bool,
-    "模块_黑名单_记日志": bool,
-
-    "模块_撤回取消": bool,
-    "模块_戳一戳": bool,
-    "模块_跟读": bool,
-    "模块_思考过滤": bool,
-    "模块_八股清洗": bool,
-
-    # 中枢
-    "全局调度间隔": int,
-    "免打扰时段": list,
-    # 私聊
-    "私聊主动_启用": bool,
-    "私聊追问_启用": bool,
-    "对谁主动": list,
-    "最短间隔": int,
-    "每天最多几次": int,
-    "触发概率": float,
-    "安静多久才找": int,
-    "追问等待秒数": int,
-    "追问过期秒数": int,
-    "追问最多次数": int,
-    "参考几条": int,
-    "参考日程": bool,
-    "日程生成时间": str,
-    "日程_自动生成": bool,
-    "日程_被动注入": bool,
-    "日程_被动注入字数": int,
-    "日程_参考历史天数": int,
-    "日程_参考最近条数": int,
-    "日程_生成模型": str,
-    "日程_穿搭风格池": list,
-    "日程_提示词模板": str,
-    # 消息防抖
-    "防抖_群聊启用": bool,
-    "防抖_私聊启用": bool,
-    "防抖_群聊等待秒": float,
-    "防抖_群聊最长等待秒": float,
-    "防抖_私聊等待秒": float,
-    "防抖_私聊最长等待秒": float,
-    "防抖_单次图片上限": int,
-    "防抖_情绪拆分": bool,
-    "防抖_过滤表情包": bool,
-    "防抖_锁超时秒": float,
-    "防抖_推理续租秒": int,
-    "参考最近聊天": bool,
-    # 群聊
-    "群聊自发破冰_启用": bool,
-    "群聊冷场判定时间": int,
-    "群聊自发破冰概率": float,
-    "群聊插话_启用": bool,
-    "群聊插话_模式": str,
-    "群聊插话_概率": float,
-    "群聊插话_冷却时间": float,
-    "群聊接话_最短间隔": float,
-    "群聊插话_饥饿保底条数": int,
-    "群聊插话_保底最短间隔": int,
-    "群聊插话_判定窗口": float,
-    "群聊插话_闭嘴静默分钟": float,
-    "群聊插话_嫌烦静默分钟": float,
-    "群聊插话_诊断日志": bool,
-    "群聊白名单": list,
-    "群聊白名单_概率倍数": float,
-    "群聊独立分区配置": list,
-    "群聊判定模型": str,
-    "群聊命中词_启用": bool,
-    "群聊命中词_关键词": list,
-    "群聊命中词_接话概率": float,
-    "群聊命中词_最短间隔秒": int,
-    "群聊命中词_需包含称呼": bool,
-    "场景感知_启用": bool,
-    "场景感知_让位contextaware": bool,
-    "场景感知_对话窗口": int,
-    "场景感知_显示对话流": bool,
-    "场景感知_严格模式": bool,
-    "场景感知_回复特征词": list,
-    "场景感知_调试推断": bool,
-    "场景感知_总结启用": bool,
-    "场景感知_总结每N条": int,
-    "场景感知_总结间隔秒": int,
-    "场景感知_总结条数": int,
-    "场景感知_总结模型": str,
-    "拟人_话多程度": int,
-    "拟人_沉默倾向": int,
-    "拟人_吐槽强度": int,
-    "拟人_成员印象": bool,
-    "拟人_情绪启用": bool,
-    "拟人_情绪衰减小时": float,
-    "拟人_动机多样化": bool,
-    # 摸鱼
-    "后台摸鱼_启用": bool,
-    "摸鱼干活最短间隔": int,
-    "摸鱼干活概率": float,
-    "摸鱼_搜索方向": str,
-    "摸鱼_搜索方向_模式": str,
-    "优先消费心事动机": bool,
-    # 节奏
-    "节奏_启用": bool,
-    "节奏_处理方式": str,
-    "节奏_每段字数": int,
-    "节奏_最多几条": int,
-    "节奏_间隔秒数": float,
-    "节奏_去句末标点": bool,
-    "节奏_去颜文字": bool,
-    "节奏_表格代码不拆": bool,
-    "节奏_花括号不拆": bool,
-    "节奏_打印处理详情": bool,
-    "节奏_只对群聊": bool,
-    "节奏_演练模式": bool,
-    "模拟分段打字": bool,
-    "分段发送延迟": float,
-}
+# 单一真源是 `_conf_schema.json`：类型表由它自动生成，不再手抄 178 行，
+# 否则加一个配置项漏改一处就会「面板写不进去 / 被静默丢弃」。
+EDITABLE: dict[str, type] = schema_types()
 
 
 def _model_options(plugin) -> list[dict]:
@@ -281,10 +97,33 @@ async def build_config(plugin) -> dict:
         {"value": "replace", "label": "只搜我写的"},
         {"value": "append", "label": "我写的优先，兼顾默认"},
     ]
+    TIER_OPTIONS = [
+        {"value": "auto", "label": "自动（跟随模型）"},
+        {"value": "full", "label": "完整（XML 场景提示）"},
+        {"value": "lite", "label": "精简（拍平场景，省 Token）"},
+    ]
+    POLISH_MODE_OPTIONS = [
+        {"value": "minimal", "label": "止损（只扫格式 + 整句废话）"},
+        {"value": "full", "label": "完整（允许换词/删词）"},
+    ]
+    SPEECH_STRENGTH_OPTIONS = [
+        {"value": "gentle", "label": "温和（只压客服/百科腔，不限句式）"},
+        {"value": "strict", "label": "严格（额外限制短句、不分点）"},
+    ]
+    ORPHAN_TAG_OPTIONS = [
+        {"value": "remove_prefix", "label": "删掉标签前的内容"},
+        {"value": "remove_tag", "label": "只删标签本身"},
+        {"value": "remove_suffix", "label": "删掉标签后的内容"},
+    ]
     models = _model_options(plugin)
     options = {
         "群聊插话_模式": MODE_OPTIONS,
         "节奏_处理方式": RHYTHM_MODE_OPTIONS,
+        "拟人_模型档位": TIER_OPTIONS,
+        "出站_清洗档位": POLISH_MODE_OPTIONS,
+        "拟人_说话方式强度": SPEECH_STRENGTH_OPTIONS,
+        "出站_孤闭合处理": ORPHAN_TAG_OPTIONS,
+        "出站_未闭合处理": ORPHAN_TAG_OPTIONS,
         "群聊判定模型": models,
         "场景感知_总结模型": models,
         "日程_生成模型": models,
@@ -390,6 +229,16 @@ def apply_config(plugin, patch: dict) -> dict:
             handler.update_config(plugin.cfg)
         elif getattr(handler, "cfg", None) is not plugin.cfg:
             handler.cfg = plugin.cfg
+
+    # 立刻把新参数推进运行态（上下文窗口/冷却/节律/身份），
+    # 否则要等到下一条群消息或下一轮协调循环才生效。
+    for hook in ("_sync_runtime_state", "_sync_identity"):
+        fn = getattr(plugin, hook, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001 - 同步失败不该让写入失败
+                logger.debug(f"proactive_life | 配置写入后 {hook} 失败: {exc}")
 
     return {
         "ok": True,

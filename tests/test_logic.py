@@ -44,7 +44,8 @@ class TestMood(unittest.TestCase):
     def test_hint_present(self):
         s = MoodStore()
         s.apply("u", "ignored")
-        self.assertIn("小情绪", s.hint("u"))
+        # 情绪提示只陈述内在状态，不再带"带点别扭"这类表演指令
+        self.assertIn("在意", s.hint("u"))
         self.assertEqual(s.hint("nobody"), "")
 
     def test_prune_bound(self):

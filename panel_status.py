@@ -49,18 +49,24 @@ def _private_block(plugin, now: float, now_dt: datetime.datetime) -> dict:
         if pending_raw:
             asked_at = _ts(pending_raw.get("asked_at")) or 0.0
             nudged = int(pending_raw.get("nudged_count", 0) or 0)
+            # 追问过一次之后，下一次追问的冷却从「上次追问时刻」开始算，
+            # 面板倒计时也必须跟 private_handler 的判定口径一致。
+            last_nudged_at = _ts(pending_raw.get("last_nudged_at")) or 0.0
+            due_base = last_nudged_at if (nudged > 0 and last_nudged_at) else asked_at
             pending = {
                 "question": str(pending_raw.get("question", "") or "")[:120],
                 "asked_at": _fmt(asked_at),
                 "nudged_count": nudged,
                 "max_nudge": max_nudge,
-                "due_in": _left(asked_at + wait_sec, now),
+                "due_in": _left(due_base + wait_sec, now),
                 "expire_in": _left(asked_at + expire_sec, now),
             }
 
         # 三项独立门槛里离“能开口”最远的那一个，就是实际倒计时
         silence_left = _left(last_user + quiet_min * 60, now) if last_user else 0
-        gap_left = _left(last_active + gap, now) if last_active else 0
+        # 「最短间隔」的单位是分钟（private_handler._check_single_user 里按分钟比较），
+        # 这里以前漏乘 60，面板会把 3 小时冷却显示成 3 分钟。
+        gap_left = _left(last_active + gap * 60, now) if last_active else 0
         blockers = []
         if silence_left > 0:
             blockers.append({"kind": "silence", "label": "还需安静", "left": silence_left})
@@ -105,27 +111,45 @@ def _group_block(plugin, now: float) -> dict:
         gh._active_stamp,
         gh._last_spoke_stamp,
         gh._last_roll_stamp,
-        gh._muted_until,
         gh._miss_streak,
         gh._recent_bot_spoke,
         gh.recent_context_cache,
     ):
         origins.update(str(k) for k in bucket.keys())
+    # 静默表统一存裸群号（见 common.canonical_group_key），这里并入对应的
+    # 完整 origin 展示；对不上的（只被闭嘴、没别的活动）单独列出来。
+    from .common import canonical_group_key
+
+    gid_to_origin = {canonical_group_key(o): o for o in origins}
+    for key in list(gh._muted_until.keys()):
+        gid = canonical_group_key(key)
+        if gid:
+            origins.add(gid_to_origin.get(gid, gid))
 
     names = name_resolver.resolve(origins)
     groups = []
     for origin in sorted(origins):
         platform_id, session_id = _split_origin(origin)
         spoke_at = _ts(gh._last_spoke_stamp.get(origin))
-        muted_until = _ts(gh._muted_until.get(origin))
+        muted_until = _ts(gh._muted_until.get(canonical_group_key(origin)))
         active_at = _ts(gh._active_stamp.get(origin))
         recent = gh._recent_bot_spoke.get(origin) or {}
+        # 实际生效概率：白名单群走白名单专属概率，其余走默认（面板要能直接看出差别）
+        try:
+            whitelisted = bool(gh._is_whitelisted(session_id))
+            icebreak_prob = round(float(gh._icebreak_prob_for(session_id)), 3)
+            chitchat_prob = round(float(gh._chitchat_prob_for(session_id)), 3)
+        except Exception:  # noqa: BLE001
+            whitelisted, icebreak_prob, chitchat_prob = False, None, None
         groups.append(
             {
                 "origin": origin,
                 "platform": platform_id,
                 "session": session_id,
                 "name": names.get(origin, ""),
+                "whitelisted": whitelisted,
+                "icebreak_prob": icebreak_prob,
+                "chitchat_prob": chitchat_prob,
                 "last_spoke": _fmt(spoke_at) if spoke_at else None,
                 "cooldown_left": _left(spoke_at + cooldown, now) if spoke_at else None,
                 "muted_left": _left(muted_until, now) if muted_until else 0,
@@ -147,6 +171,12 @@ def _group_block(plugin, now: float) -> dict:
         "interject_probability": float(cfg.get("群聊插话_概率", 0.05) or 0),
         "cooldown": cooldown,
         "whitelist": [str(x) for x in (cfg.get("群聊白名单") or [])],
+        "whitelist_icebreak_probability": float(
+            cfg.get("群聊白名单_破冰概率", 0.6) or 0
+        ),
+        "whitelist_interject_probability": float(
+            cfg.get("群聊白名单_插话概率", 0.15) or 0
+        ),
         "groups": groups,
     }
 
@@ -236,6 +266,10 @@ def _outbound_block(plugin) -> dict:
         "think_enabled": bool(plugin.cfg.get("模块_思考过滤", True)),
         "polish_enabled": bool(plugin.cfg.get("模块_八股清洗", True)),
         "ai_rules_enabled": bool(plugin.cfg.get("出站_八股_清AI八股", True)),
+        # 档位与历史防污染：面板要能一眼看出「现在到底在洗什么」
+        "mode": str(plugin.cfg.get("出站_清洗档位", "minimal") or "minimal"),
+        "history_guard": bool(plugin.cfg.get("出站_历史防污染", True)),
+        "history_threshold": int(plugin.cfg.get("出站_历史清洗阈值", 3) or 3),
         "rule_total": len(rules),
         "rules": rules,
         "categories": categories,
@@ -408,6 +442,7 @@ def _conflicts_block(plugin) -> list[dict]:
             ("astrbot_plugin_prose_polish", "八股清洗", "八股清洗"),
             ("astrbot_plugin_slang_miner", "黑话", "群黑话挖掘"),
             ("astrbot_plugin_weather", "天气", "天气锚点"),
+            ("astrbot_plugin_gif_vision_helper", "视觉", "GIF 动图拆帧"),
         ]
         for _plugin, _module, _label in _merged:
             if _star_active(_plugin) and plugin._module_on(_module):
@@ -588,8 +623,8 @@ def _quiet_left(hours: list[int], now_dt: datetime.datetime) -> int:
 
 def _motive_block(plugin) -> dict:
     try:
-        data = plugin.motive_mgr._load_data()
-        pool = list(data.get("motives", []) or [])
+        # 走带文件戳缓存的只读方法：面板 4 秒轮询不该每次都读盘
+        pool = plugin.motive_mgr.list_motives()
     except Exception:
         pool = []
 

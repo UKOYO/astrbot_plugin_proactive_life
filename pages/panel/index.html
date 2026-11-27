@@ -121,7 +121,8 @@
             <button type="button" class="preset__btn text-btn" data-preset="restrained">克制</button>
             <button type="button" class="preset__btn text-btn" data-preset="balanced">均衡</button>
             <button type="button" class="preset__btn text-btn" data-preset="active">活跃</button>
-            <span class="preset__note" id="presetNote">只改常用参数，不影响你的高级配置</span>
+          <button type="button" class="preset__btn text-btn" data-preset="lowload">低负载</button>
+            <span class="preset__note" id="presetNote">只改常用参数，不影响你的高级配置；「低负载」会关掉总结/跨会话记忆/黑话解析</span>
           </div>
         </section>
 
@@ -211,7 +212,7 @@
       <div class="panel-view" id="view-interact" data-view="interact">
         <section class="sec">
           <h2 class="sec__head"><span>互动</span><em class="hint">私聊和群聊都会触发的交互反射</em></h2>
-          <p class="lede">被戳一下会回应，撤回消息会取消还没发出的回复并清理防抖。这两项对私聊和群聊都生效。</p>
+          <p class="lede">「戳一戳」是 QQ 的戳一戳通知，「纯 @」是不带任何文字的 @机器人，两者各有独立的概率与冷却。下面按「开关 → 戳一戳回应 → 纯 @ 与后续合并 → 跟戳（凑热闹）→ 上下文取材」分组：跟戳是群里几个人一起戳同一个人时顺手跟一脚；最后一组决定把哪些消息一起带给模型（前面几条、多少秒内、包不包括自己刚说的话）。撤回消息会取消还没发出的回复并清理防抖。</p>
           <form class="conf" data-conf="interact" autocomplete="off"></form>
         </section>
       </div>
@@ -239,7 +240,7 @@
       <div class="panel-view" id="view-outbound" data-view="outbound">
         <section class="sec">
           <h2 class="sec__head"><span>出站清洗</span><em class="hint">模型回复发出前依次过这几道</em></h2>
-          <p class="lede">顺序固定：先过滤误吐的思考过程，再洗掉 AI 八股味，最后交给「节奏」分段发送。</p>
+          <p class="lede">出站清洗只当「扫帚」：默认「止损档」只剥加粗/标题/列表/分隔线这类格式噪音，再砍掉独立成句的客服尾与马屁头，<b>绝不伸手进句子中间抠词</b>（换词、删句中短语、水词、合句默认全关，切「完整档」并单独打开才生效）。「不是A而是B」「三连排比」「短剧甩尾」这类只统计不改写，当调 prompt 的仪表盘用。八股味过重的回复还会被从会话历史里摘掉，避免下一轮继续模仿。</p>
           <form class="conf" data-conf="outbound" autocomplete="off"></form>
         </section>
         <section class="sec">
@@ -258,6 +259,7 @@
       <div class="panel-view" id="view-schedule" data-view="schedule">
         <section class="sec">
           <h2 class="sec__head"><span>今日日程</span><em id="scheduleHint" class="hint">—</em></h2>
+          <p class="lede">日程/穿搭默认「按需注入」：对方问到「在干嘛 / 今天」才带此刻在做与日程，问到「穿什么」才带外观与穿搭，平时只给一句时间锚点。「固定外观」填了之后只换衣服、不改长相；「作息延迟」按日程里的忙碌词让回复晚几秒（指令与急事自动豁免）。</p>
           <div id="scheduleView" class="schedule"></div>
           <div class="acts schedule__acts">
             <button type="button" class="act text-btn" data-act="schedule_generate">重新生成</button>
@@ -306,7 +308,7 @@
 
         <section class="sec">
           <h2 class="sec__head"><span>人设与生成</span><em class="hint">选择人设，再用模型生成专用提示词</em></h2>
-          <p class="lede">从 AstrBot 的人设里挑一份，指定模型把它改写成专供本插件使用的提示词。专用提示词会优先生效；也可以直接在下方手动编辑。</p>
+          <p class="lede">从 AstrBot 的人设里挑一份，可让模型提炼出结构化设定（自称/称呼/生活背景）。<b>「插件专用提示词」只用于元数据与日程生成，不再拼接进主对话</b>——主对话始终使用 AstrBot 里的原人设，避免覆盖你的语感。</p>
           <div class="acts identity__acts">
             <button type="button" class="act text-btn" data-act="persona_reload">重新载入人设</button>
             <button type="button" class="act text-btn" data-act="persona_synthesize">生成专用提示词</button>
@@ -322,7 +324,7 @@
       <div class="panel-view" id="view-context" data-view="context">
         <section class="sec">
           <h2 class="sec__head"><span>上下文</span><em class="hint">场景感知 · 说话风格</em></h2>
-          <p class="lede">分析「谁在跟谁说话」避免抢答，并调节说话风格（话多/沉默/吐槽）。场景分析为纯规则；短期总结按需调用模型。</p>
+          <p class="lede">分析「谁在跟谁说话」避免抢答，并调节说话风格（话多/沉默/吐槽）。场景分析为纯规则；短期总结按需调用模型。「说话方式与正样本」里：身份锚定只在被盘问模型/身份时注入（私聊普通问句放行），口语锚点填两三条真实口语当正样本，比一堆禁令更管用；「模型与限长」的档位选自动时会按模型名识别轻量模型并自动省 Token；「动图拆帧」把群里发的 GIF 拆成几帧给模型看。</p>
           <form class="conf" data-conf="context" autocomplete="off"></form>
           <div id="contextStats" class="context__stats"></div>
           <div id="contextInfo" class="context__info"></div>

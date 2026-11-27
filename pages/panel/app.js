@@ -18,10 +18,28 @@
     "拟人_说话方式约束": "注入说话方式硬约束，防止低智模型退化成解说员/百科",
     "拟人_说话方式强度": "strict=严格（防解说员）/gentle=温和（只提醒语气）",
     "拟人_说话方式补充": "自己补充的说话要求（会加到约束末尾，200字内）",
+    "拟人_身份锚定": "被问「你是谁/什么模型」时不自曝（按需注入）",
+    "拟人_口语锚点": "口语正样本（照这样说话）",
     "拟人_情绪落盘": "情绪状态落盘",
     "拟人_情绪注入被动": "被动回复附带情绪",
     "心事_被动注入": "被动回复附带心事",
     "生活状态_总字数上限": "状态块字数上限",
+    "模块_视觉": "动图拆帧总开关",
+    "视觉_最大帧数": "动图最多抽几帧",
+    "视觉_单帧边长": "单帧最长边（像素）",
+    "视觉_提示注入": "注入「这是动图抽帧」提示",
+    "视觉_临时帧保留小时": "帧文件保留小时",
+    "拟人_模型档位": "模型档位（lite 拍平场景提示）",
+    "拟人_闲聊限长启用": "闲聊限长（省输出 Token）",
+    "拟人_闲聊限长max_tokens": "闲聊输出上限",
+    "拟人_闲聊限长频率惩罚": "闲聊重复惩罚",
+    "主动_最大步数": "主动开口最大步数",
+    "摸鱼_最大步数": "摸鱼最大步数",
+    "群聊插话_模型判闭嘴": "模型判闭嘴",
+    "作息延迟_启用": "按作息延迟回复",
+    "作息延迟_最多秒": "最长延迟秒数",
+    "作息延迟_忙碌词": "忙碌判定词",
+    "作息延迟_急事词": "急事豁免词",
     "角色_自动读取AstrBot人设": "自动读取 AstrBot 人设",
     "角色_Bot自称": "Bot 自称",
     "角色_对方称呼": "对方称呼",
@@ -36,17 +54,22 @@
     "模块_日程": "日程模块总开关",
     "模块_上下文": "上下文模块总开关",
     "模块_防抖": "防抖模块总开关",
-    "戳一戳_上下文条数": "戳/艾特时附带前面几条消息当上下文",
-    "戳一戳_上下文秒数": "只附带这么多秒内发的消息（防串到很久以前的话题）",
-    "戳一戳_收录自己发言": "戳/艾特时也带入机器人刚在群里发过的消息（表情包制作、入群欢迎、退群通知等）",
-    "戳一戳_后续合并": "先戳/艾特、后发消息时，把后续内容合并进同一次回复",
-    "戳一戳_纯艾特等待秒": "纯艾特后先挂起等正文的秒数（期间补发内容就合并回复），0 = 不等待",
-    "戳一戳_纯艾特回应": "纯艾特也算戳一戳",
-    "戳一戳_个人冷却秒": "个人戳完冷却 · 秒",
-    "戳一戳_群冷却秒": "群内被戳冷却 · 秒",
+    "戳一戳_上下文条数": "附带最近几条消息",
+    "戳一戳_上下文秒数": "只取最近多少秒内的消息",
+    "戳一戳_收录自己发言": "把自己刚发的话也当上下文",
+    "戳一戳_后续合并": "先 @ / 戳、后补消息 → 合并成一次回复",
+    "戳一戳_纯艾特等待秒": "纯 @ 后等正文（秒，0 = 不等待）",
+    "戳一戳_纯艾特回应": "纯 @（不带文字）也回应",
+    "戳一戳_个人冷却秒": "同一人冷却（秒）",
+    "戳一戳_群冷却秒": "群内冷却（秒）",
     "戳一戳_反戳": "戳回去",
-    "戳一戳_回应概率": "被戳回应概率",
-    "戳一戳_纯艾特概率": "纯艾特回应概率",
+    "戳一戳_回应概率": "戳一戳回应概率",
+    "戳一戳_纯艾特概率": "纯 @ 回应概率",
+    "戳一戳_跟戳": "跟戳（凑热闹）",
+    "戳一戳_跟戳人数": "至少几个人一同戳才跟",
+    "戳一戳_跟戳窗口秒": "统计窗口（秒）",
+    "戳一戳_跟戳概率": "跟戳概率",
+    "戳一戳_跟戳冷却秒": "同一目标冷却（秒）",
     "跟读_阈值": "几句相同才复读",
     "跟读_最小间隔秒": "复读间隔",
     "跟读_概率": "复读概率",
@@ -59,12 +82,15 @@
     "出站_空回复兜底": "空回复时说啥",
     "出站_修剪空白": "去掉首尾空格",
     "出站_压缩空行": "合并空行",
+    "出站_清洗档位": "清洗档位（止损 / 完整）",
+    "出站_历史防污染": "八股回复不留进历史",
+    "出站_历史清洗阈值": "历史摘除阈值（分）",
     "出站_八股_清AI八股": "清理 AI 八股",
-    "出站_八股_改句式": "改掉绕弯句式",
-    "出站_八股_换词": "换掉老套词",
-    "出站_八股_删八股短语": "删掉套话",
-    "出站_八股_激进删词": "删得更狠",
-    "出站_八股_水词配额": "保留几个水词",
+    "出站_八股_改句式": "改句式（默认关 · 易出语病）",
+    "出站_八股_换词": "文学换词（默认关 · 易误伤名词）",
+    "出站_八股_删八股短语": "句中删短语（默认关 · 会挖洞）",
+    "出站_八股_激进删词": "删得更狠（默认关）",
+    "出站_八股_水词配额": "水词保留几个（完整档才生效）",
     "出站_八股_合并碎句": "合并短句",
     "出站_八股_碎句阈值": "多短算短句",
     "出站_八股_删结尾升华": "删掉结尾升华",
@@ -121,12 +147,15 @@
     "日程生成时间": "生成时刻 · HH:MM",
     "日程_自动生成": "每日自动生成",
     "日程_被动注入": "被动回复也带生活状态",
+    "日程_被动按需注入": "日程/穿搭按需注入（问到才给）",
+    "日程_生成超时秒": "日程生成超时（秒）",
     "日程_被动注入字数": "注入日程字数上限",
     "日程_参考历史天数": "参考历史 · 天",
     "日程_参考最近条数": "参考聊天 · 条",
     "日程_生成模型": "生成模型",
     "日程_穿搭风格池": "服装库 · 穿搭风格",
     "日程_提示词模板": "提示词模板",
+    "日程_外观锚点": "角色固定外观",
     "参考最近聊天": "参考最近聊天",
     "群聊自发破冰_启用": "群聊自发破冰",
     "群聊冷场判定时间": "冷场判定 · 分",
@@ -143,7 +172,8 @@
     "群聊插话_嫌烦静默分钟": "嫌烦静默 · 分",
     "群聊插话_诊断日志": "插话诊断日志",
     "群聊白名单": "群聊白名单",
-    "群聊白名单_概率倍数": "白名单概率倍数",
+    "群聊白名单_插话概率": "白名单群插话概率（不乘默认）",
+    "群聊白名单_破冰概率": "白名单群破冰概率（不乘默认）",
     "群聊判定模型": "群聊判定模型",
     "群聊命中词_启用": "命中词唤醒",
     "群聊命中词_关键词": "命中词",
@@ -197,8 +227,21 @@
   const CORE_KEYS = ["全局调度间隔", "免打扰时段"];
   const WORKER_KEYS = ["后台摸鱼_启用", "摸鱼干活最短间隔", "摸鱼干活概率", "优先消费心事动机"];
   const TYPING_KEYS = ["模拟分段打字", "分段发送延迟"];
-  // 这些键用多行文本框编辑
-  const TEXTAREA_KEYS = ["日程_提示词模板", "角色_生活背景", "角色_额外人设", "角色_插件专用提示词"];
+  // 长文本字段：用「整段展示 + 点击编辑」，避免单行输入框把内容截断
+  const TEXTAREA_KEYS = [
+    "日程_提示词模板", "角色_生活背景", "角色_额外人设", "角色_插件专用提示词",
+    "日程_外观锚点", "拟人_说话方式补充",
+  ];
+  // 留空时各自的含义不一样，提示语不能共用一句
+  const LONG_TEXT_EMPTY = {
+    "日程_提示词模板": "（留空使用内置模板）",
+    "角色_生活背景": "（留空只用 AstrBot 人设）",
+    "角色_额外人设": "（留空只用 AstrBot 人设）",
+    "角色_插件专用提示词": "（留空使用 AstrBot 人设原文）",
+    "日程_外观锚点": "（留空 = 不启用固定外观）",
+    "拟人_说话方式补充": "（留空 = 不加额外要求）",
+  };
+  const emptyHint = (key) => LONG_TEXT_EMPTY[key] || "（留空使用内置模板）";
   const MODULE_GROUP = {
     "模块_私聊": "private", "模块_群聊": "group", "模块_摸鱼": "worker",
     "模块_节奏": "rhythm", "模块_日程": "schedule", "模块_上下文": "context",
@@ -207,11 +250,15 @@
     "模块_黑名单": "blacklist", "模块_撤回取消": "interact", "模块_戳一戳": "interact",
     "模块_跟读": "group", "模块_黑话": "slang",
     "模块_思考过滤": "outbound", "模块_八股清洗": "outbound", "模块_天气": "schedule",
+    "模块_视觉": "context",
   };
   const GROUP_OF = (key) => {
     if (MODULE_GROUP[key]) return MODULE_GROUP[key];
     if (key.startsWith("角色_")) return "identity";
     if (key === "日程生成时间" || key.startsWith("日程_")) return "schedule";
+    if (key.startsWith("作息延迟_")) return "schedule";
+    if (key.startsWith("视觉_")) return "context";
+    if (key === "心事_被动注入" || key === "生活状态_总字数上限") return "context";
     if (key.startsWith("防抖_")) return "debounce";
     if (key.startsWith("场景感知_") || key.startsWith("拟人_")) return "context";
     if (CORE_KEYS.includes(key)) return "core";
@@ -229,8 +276,18 @@
     return "core";
   };
 
-  const el = {
-    loopDot: document.getElementById("loopDot"),
+  // 高耗 Token 的开关：面板直接标注，方便按需关掉
+  const COST_HINTS = {
+    "场景感知_总结启用": "高耗 Token",
+    "群聊插话_模型判闭嘴": "高耗 Token",
+    "黑话_自动解析": "高耗 Token",
+    "后台摸鱼_启用": "高耗 Token",
+    "模块_视觉": "高耗 Token",
+    "拟人_闲聊限长启用": "省 Token",
+    "出站_清洗档位": "省 Token",
+  };
+
+  const el = {    loopDot: document.getElementById("loopDot"),
     loopText: document.getElementById("loopText"),
     mNext: document.getElementById("mNext"),
     mInterval: document.getElementById("mInterval"),
@@ -721,14 +778,22 @@
   function renderGroup(g) {
     const groups = g.groups || [];
     const bits = [];
-    if (g.icebreak_enabled) bits.push(`破冰 ${pct(g.icebreak_probability)}`);
-    if (g.interject_enabled) bits.push(`插话 ${pct(g.interject_probability)}`);
+    if (g.icebreak_enabled) bits.push(`破冰 默认 ${pct(g.icebreak_probability)}`);
+    if (g.interject_enabled) bits.push(`插话 默认 ${pct(g.interject_probability)}`);
+    // 白名单群走自己的概率，不再乘默认值；面板要把两套数字分开显示
+    if (g.whitelist_icebreak_probability != null) {
+      bits.push(
+        `白名单 破冰 ${pct(g.whitelist_icebreak_probability)} / 插话 ${pct(
+          g.whitelist_interject_probability,
+        )}`,
+      );
+    }
     bits.push(`冷却 ${g.cooldown} 秒`);
     el.groupHint.textContent = `${bits.join(" · ")} · ${groups.length} 群`;
 
     if (!groups.length) {
       el.groupBody.innerHTML =
-        '<tr><td colspan="7" class="empty">还没有群聊记录</td></tr>';
+        '<tr><td colspan="7" class="empty">还没有群聊记录（不会主动开口的群不再收录）</td></tr>';
       return;
     }
 
@@ -738,6 +803,12 @@
           `<tr>` +
           `<td class="gname">${esc(item.name || item.session)}${
             item.name ? `<small>${esc(item.session)}</small>` : ""
+          }${
+            item.whitelisted
+              ? `<small class="tag-whitelist">白名单 · 插话 ${pct(item.chitchat_prob)}</small>`
+              : item.chitchat_prob != null
+                ? `<small>插话 ${pct(item.chitchat_prob)}</small>`
+                : ""
           }</td>` +
           `<td>${esc(item.last_spoke || "未开口")}</td>` +
           `<td>${
@@ -802,8 +873,16 @@
       const cats = d.categories || [];
       const rules = d.rules || [];
       if (el.ruleMeta) {
+        const modeText = d.mode === "full"
+          ? "完整档（换词/删词按开关生效）"
+          : "止损档（只扫格式与整句废话）";
+        const guardText = d.history_guard
+          ? `历史防污染 ≥${d.history_threshold} 分`
+          : "历史防污染已关";
         el.ruleMeta.textContent = d.rule_total
-          ? `共 ${d.rule_total} 条规则 · ${cats.length} 类${d.ai_rules_enabled ? "" : "（AI 八股已关闭）"}`
+          ? `共 ${d.rule_total} 条规则 · ${modeText} · ${guardText}${
+              d.ai_rules_enabled ? "" : " · AI 八股已关闭"
+            }`
           : "—";
       }
       el.ruleCatalog.innerHTML = cats.map((c) => {
@@ -814,7 +893,9 @@
             '<span>' + items.length + ' 条</span></div>' +
           items.map((r) =>
             '<div class="rule-item" data-rule="' + esc(r.id) + '">' +
-              '<span class="rule-item__name">' + esc(r.name) + '</span>' +
+              '<span class="rule-item__name">' + esc(r.name) +
+                (r.detect_only ? ' <em class="rule-item__tag">仅统计</em>' : '') +
+              '</span>' +
               '<span class="rule-item__desc">' + esc(r.desc || "") + '</span>' +
             '</div>'
           ).join("") +
@@ -1458,15 +1539,52 @@
     if (key === "模块_群聊" || key.startsWith("群聊接话") || key.startsWith("群聊插话")
         || key.startsWith("群聊命中词") || key.startsWith("群聊自发") || key === "群聊冷场判定时间"
         || key === "群聊独立分区配置") return "接话与插话";
+    // 白名单 / 判定模型单独一组：白名单群走独立概率，别和默认概率混在一起看
+    if (key.startsWith("群聊白名单") || key === "群聊判定模型") return "白名单与判定模型";
     if (key.startsWith("跟读_") || key === "模块_跟读") return "复读";
     if (key.startsWith("黑话_") || key === "模块_黑话") return "群黑话";
     if (key.startsWith("模块_黑名单")) return "黑名单";
-    if (key === "模块_撤回取消") return "撤回取消";
-    if (key.startsWith("戳一戳_") || key === "模块_戳一戳") return "戳一戳";
+    // 互动页：把「开关 / 戳一戳回应 / 纯 @ 与合并 / 上下文取材」分开。
+    // 以前这十几项挤在同一个「戳一戳」小节里，分不清哪条管戳、哪条管 @。
+    if (key === "模块_戳一戳" || key === "模块_撤回取消") return "开关";
+    if (
+      key === "戳一戳_回应概率" ||
+      key === "戳一戳_反戳" ||
+      key === "戳一戳_个人冷却秒" ||
+      key === "戳一戳_群冷却秒"
+    )
+      return "戳一戳回应";
+    if (
+      key === "戳一戳_纯艾特回应" ||
+      key === "戳一戳_纯艾特概率" ||
+      key === "戳一戳_纯艾特等待秒" ||
+      key === "戳一戳_后续合并"
+    )
+      return "纯 @ 与后续合并";
+    if (
+      key === "戳一戳_上下文条数" ||
+      key === "戳一戳_上下文秒数" ||
+      key === "戳一戳_收录自己发言"
+    )
+      return "上下文取材";
+    if (key.startsWith("戳一戳_跟戳")) return "跟戳（凑热闹）";
+    // 兜底：以后新加的 戳一戳_* 键不至于掉进「通用」小节
+    if (key.startsWith("戳一戳_")) return "其他";
     if (key.startsWith("出站_八股") || key === "模块_八股清洗") return "八股清洗";
+    // 清洗档位 / 历史防污染：新的一组，别再混进「思考过滤」
+    if (key === "出站_清洗档位" || key.startsWith("出站_历史")) return "清洗档位与历史";
     if (key.startsWith("出站_") || key === "模块_思考过滤") return "思考过滤";
+    if (key === "作息延迟_启用" || key.startsWith("作息延迟_")) return "作息延迟";
+    if (key.startsWith("视觉_") || key === "模块_视觉") return "动图拆帧";
+    if (key === "心事_被动注入" || key === "生活状态_总字数上限") return "注入与预算";
+    if (key === "主动_最大步数") return "主动步数";
+    if (key === "全局调度间隔" || key === "免打扰时段") return "调度";
     if (key.startsWith("场景感知_") || key === "模块_上下文") return "场景感知";
-    if (key.startsWith("拟人_")) return "拟人性格";
+    // 拟人项拆三组：说话方式 / 情绪与性格 / 模型与限长
+    if (key === "拟人_身份锚定" || key === "拟人_口语锚点"
+        || key.startsWith("拟人_说话方式")) return "说话方式与正样本";
+    if (key.startsWith("拟人_闲聊限长") || key === "拟人_模型档位") return "模型与限长";
+    if (key.startsWith("拟人_")) return "情绪与性格";
     if (key.startsWith("节奏_") || key === "模块_节奏" || TYPING_KEYS.includes(key)) return "发送节奏";
     if (key.startsWith("防抖_") || key === "模块_防抖") return "消息防抖";
     if (key.startsWith("日程") || key === "模块_日程" || key.startsWith("天气_") || key === "模块_天气") return "日程与天气";
@@ -1540,10 +1658,11 @@
             `</div></div>`
           );
         }
-        // 长文本（如提示词模板）用多行
+        // 长文本（固定外观 / 提示词模板 / 人设等）用多行
         if (TEXTAREA_KEYS.includes(key)) {
           // 直接按内容行数设 rows：不依赖 JS 时机，WebView 里也能正确显示全文
           const raw = String(value ?? "");
+          const empty = emptyHint(key);
           // 宁可框大也不裁切：按每个中文约 20 字/行的保守值估算，再留 3 行余量。
           // 上限放宽到 120 行，足以覆盖任何正常长度的人设文本。
           const estLines = raw.split("\n").reduce((n, line) => {
@@ -1554,9 +1673,9 @@
           return (
             `<div class="field field--wide longtext" data-key="${esc(key)}" data-type="str">` +
             `<label>${esc(label)} <em class="longtext__edit">点击编辑</em></label>` +
-            `<pre class="longtext__view" title="点击编辑">${esc(raw) || "（留空使用内置模板）"}</pre>` +
+            `<pre class="longtext__view" title="点击编辑">${esc(raw) || esc(empty)}</pre>` +
             `<textarea id="f-${esc(key)}" class="field__text longtext__input" data-key="${esc(key)}" data-type="str" ` +
-            `rows="${rows}" placeholder="留空使用内置模板" hidden>${esc(raw)}</textarea></div>`
+            `rows="${rows}" placeholder="${esc(empty)}" hidden>${esc(raw)}</textarea></div>`
           );
         }
         // 清单类（服装库、免打扰时段等）用标签式编辑：紧凑、全部可见、可增删
@@ -1571,26 +1690,44 @@
           );
         }
         const text = value ?? "";
+        // title 兜底：单行框放不下的内容，悬停也能看到全文
         return (
           `<div class="field"><label for="f-${esc(key)}">${esc(label)}</label>` +
           `<input id="f-${esc(key)}" data-key="${esc(key)}" data-type="${esc(type)}" ` +
-          `value="${esc(text)}" inputmode="decimal" /></div>`
+          `value="${esc(text)}" title="${esc(text)}" inputmode="decimal" /></div>`
         );
         })();
-        (buckets[group] || buckets.core).push({ html: field, section: SECTION_OF(key) });
+        let fieldHtml = field;
+        // 高耗 Token 标注：贴在字段最前面，一眼能看见
+        if (COST_HINTS[key]) {
+          const cost = COST_HINTS[key];
+          fieldHtml =
+            `<div class="cost-tag${cost === "省 Token" ? " cost-tag--good" : ""}">${esc(cost)}</div>` +
+            fieldHtml;
+        }
+        (buckets[group] || buckets.core).push({ html: fieldHtml, section: SECTION_OF(key) });
     });
     el.confForms.forEach((form) => {
       const g = form.dataset.conf;
       const renderTagged = (arr) => {
-        let out = "", last = "";
+        // 按小节聚合后再渲染：同一小节的键在 schema 里未必相邻，
+        // 以前「section 一变就出标题」会让同一个小节反复出现、条目被拆散。
+        const order = [];
+        const bySection = new Map();
         arr.forEach((t) => {
-          if (t.section !== last) {
-            out += '<h3 class="conf__sub">' + esc(t.section) + '</h3>';
-            last = t.section;
+          const name = t.section || "通用";
+          if (!bySection.has(name)) {
+            bySection.set(name, []);
+            order.push(name);
           }
-          out += t.html;
+          bySection.get(name).push(t.html);
         });
-        return out;
+        return order
+          .map(
+            (name) =>
+              '<h3 class="conf__sub">' + esc(name) + "</h3>" + bySection.get(name).join(""),
+          )
+          .join("");
       };
       let html = (buckets[g] || []).length
         ? renderTagged(buckets[g])
@@ -1610,7 +1747,7 @@
         autoGrow(input);
       });
       input.addEventListener("blur", () => {
-        view.textContent = input.value || "（留空使用内置模板）";
+        view.textContent = input.value || emptyHint(wrap.dataset.key);
         input.hidden = true;
         view.hidden = false;
       });
@@ -1662,7 +1799,7 @@
             // 同步展示态 pre（长文本字段）
             const wrap = node.closest(".longtext");
             const view = wrap && wrap.querySelector(".longtext__view");
-            if (view) view.textContent = node.value || "（留空使用内置模板）";
+            if (view) view.textContent = node.value || emptyHint(key);
           }
         }
       });

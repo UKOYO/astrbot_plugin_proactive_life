@@ -11,11 +11,11 @@ import re
 from typing import Any
 
 from .polish_rules import (
-    ENDING_PATTERNS, SENTENCE_RULES, SOFTENERS, WORD_RULES, rule_ids,
+    ENDING_PATTERNS, SENTENCE_RULES, SOFTENER_EXCLUDE, SOFTENERS, WORD_RULES, rule_ids,
 )
 from .polish_bagu import (
     all_phrases, detect_high_risk, downgrade_dash,
-    trim_closing_tail, trim_flattery_head, trim_official_head,
+    trim_closing_tail, trim_flattery_head, trim_narration_head, trim_official_head,
 )
 
 # 只检测、不硬改的规则：硬改容易砍出语病（"不是A而是B"删一半会变病句），
@@ -24,14 +24,28 @@ DETECT_ONLY_RULE_IDS = frozenset({
     "negative_parallelism",
     "negative_parallelism_cross",
     "negative_parallelism_2",
+    # 依赖上下文句法（前面常带动词），硬改会把「带着三分醉意」改成「带着有点醉意」
+    "ratio_split",
+    "less_more",
+    # 词池是谓语短语、匹配点是宾语名词位置，替换后剩「他有声音低」这种残句
+    "voice_rasp",
+    "cold_pool_eyes",
 })
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "改句式": True, "换词": True, "删八股短语": True, "激进删词": False,
+    # 默认「止损档」：出站正则看不懂语义，只做格式兜底 + 整句裁剪，
+    # 换词/删句中短语/水词/合句这些「越想润色越容易出语病」的默认全关。
+    "清洗档位": "minimal",
+    "改句式": False, "换词": False, "删八股短语": False, "激进删词": False,
     "水词配额": 1, "合并碎句": False, "碎句阈值": 8, "删结尾升华": True,
     "保护细节块": True, "保护代码表格": True, "保护引号台词": True,
     "禁用规则": [], "打印详情": False, "演练模式": False,
 }
+
+# 「止损档」只跑这三类：格式噪音（structure）、客服腔（service）、升华尾（elevate）。
+# 其它类别（开场白/自我指称/冗余修饰/排比/职场黑话）都需要语义理解，
+# 交给上游 prompt 治；它们里的 detect_only 规则仍会计数。
+_MINIMAL_AI_CATEGORIES = frozenset({"structure", "service", "elevate"})
 
 # 占位符用控制字符包起来，正常文本里几乎不可能出现
 PH_OPEN = "\u0001"
@@ -60,12 +74,54 @@ SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?…])")
 SEG_SPLIT_RE = re.compile(r"(?<=[。！？!?…，,；;\n])")
 
 
+# 删短语后左边停在这些词上、右边紧跟标点/句末 → 中心词被挖走（"水有点浑浊，"→"水有点，"）
+_DANGLING_LEFT = (
+    "的", "地", "得", "很", "太", "挺", "更", "最", "都", "也", "还",
+    "有点", "有些", "比较", "十分", "非常", "特别", "突然", "忽然",
+    "几乎", "仿佛", "已经", "正在", "一直", "微微", "轻轻", "缓缓",
+)
+_PUNCT_OR_END = "，,。！？；、!?…～~ \n\t"
+
+
+def _would_dangle(left: str, right: str) -> bool:
+    """删完这一处会不会把谓语挖空：左边停在程度/副词上，右边紧跟标点或句末。"""
+    tail = left.rstrip()
+    head = right.lstrip()
+    if head and head[0] not in _PUNCT_OR_END:
+        return False
+    return tail.endswith(_DANGLING_LEFT)
+
+
+def _drop_phrase(text: str, word: str) -> tuple[str, int]:
+    """逐次删短语，每次都做「挖洞」检查；会出残局的那一处直接跳过。"""
+    if not word or word not in text:
+        return text, 0
+    out: list[str] = []
+    i = 0
+    removed = 0
+    while True:
+        j = text.find(word, i)
+        if j < 0:
+            out.append(text[i:])
+            break
+        left = "".join(out) + text[i:j]
+        right = text[j + len(word):]
+        if _would_dangle(left, right):
+            out.append(text[i : j + len(word)])
+        else:
+            out.append(text[i:j])
+            removed += 1
+        i = j + len(word)
+    return "".join(out), removed
+
+
 def _delete_phrases(text: str, phrases: list[str], ratio: float = 0.45) -> tuple[str, int]:
     """删八股短语。按分句处理，每句删完过一遍安全阀，删废了就退回原句。
 
-    安全阀拦两种情况：
+    安全阀拦三种情况：
       1. 删完剩不到原句一半，说明中心词被一起削掉了
       2. 删完以「的/地/感/标点」开头，说明句子被拦腰截断
+      3. 删完中间被挖洞（"水有点浑浊，" → "水有点，"）：见 :func:`_would_dangle`
     """
     hits = 0
     out: list[str] = []
@@ -79,8 +135,8 @@ def _delete_phrases(text: str, phrases: list[str], ratio: float = 0.45) -> tuple
         n = 0
         for w in phrases:
             if w in core:
-                n += core.count(w)
-                core = core.replace(w, "")
+                core, k = _drop_phrase(core, w)
+                n += k
 
         if n == 0:
             out.append(seg)
@@ -123,7 +179,10 @@ def _strip_softeners(text: str, quota: int) -> tuple[str, int]:
         hits += 1
         return ""
 
-    pattern = re.compile("|".join(SOFTENERS))
+    # 把紧跟其后的「地」一起匹配走：否则删完会留下「我地看着」这种孤字。
+    # 固定词（悄悄话 / 微微一笑 / 默默无闻）用负向前瞻跳过，别把词拆开。
+    parts = [w + SOFTENER_EXCLUDE.get(w, "") for w in SOFTENERS]
+    pattern = re.compile("(?:" + "|".join(parts) + r")地?")
     return pattern.sub(_sub, text), hits
 
 
@@ -294,14 +353,32 @@ class ProsePolisher:
 
     # ------------------------------------------------------------ 管线
 
-    def _apply_ai_rules(self, body: str, disabled: set) -> tuple[str, int, list[str]]:
-        """跑 AI 八股规则；带词池的走洗牌抽取，其余直接替换。"""
+    def _apply_ai_rules(
+        self, body: str, disabled: set, minimal: bool = False
+    ) -> tuple[str, int, list[str]]:
+        """跑 AI 八股规则；带词池的走洗牌抽取，其余直接替换。
+
+        ``minimal=True``（默认档）时只跑格式类规则，其余（开场白/客服腔/升华/排比/
+        冗余修饰/职场黑话）一律跳过——这些靠上游 prompt 治，正则硬改只会改坏话。
+        ``detect_only`` 规则两种档位都只统计、不改写。
+        """
         from .polish_ai_rules import ALL_AI_RULES
 
         hits = 0
         hit_ids: list[str] = []
         for rule in ALL_AI_RULES:
             if rule["id"] in disabled:
+                continue
+            if minimal and rule.get("category") not in _MINIMAL_AI_CATEGORIES and not rule.get("detect_only"):
+                continue
+            if rule.get("detect_only"):
+                try:
+                    n = len(rule["pattern"].findall(body))
+                except Exception:  # noqa: BLE001
+                    continue
+                if n:
+                    hits += n
+                    hit_ids.append(rule["id"])
                 continue
             pool = rule.get("pool")
             try:
@@ -324,8 +401,18 @@ class ProsePolisher:
             return text, 0, []
 
         disabled = set(self.config.get("禁用规则") or [])
+        # 档位：minimal（默认，止损档）只做格式兜底 + 整句裁剪 + 只统计；
+        # full 才会跑换词/删句中短语/水词/合句这些需要语义理解的操作。
+        minimal = str(self.config.get("清洗档位", "minimal") or "minimal").strip().lower() != "full"
         self.last_risk = {}          # 高风险句式统计（只观测不改写）
         body, vault = self._protect(text)
+        # 高风险句式必须在**动手清洗之前**、且针对**挖空保护区后的正文**统计：
+        # 放到最后会同时踩两个坑——正文的破折号已被 downgrade_dash 换掉（永远
+        # 统计不到），而代码块/引号台词刚被 _restore 还原回来（被误报成八股）。
+        try:
+            self.last_risk = detect_high_risk(body)
+        except Exception:  # noqa: BLE001
+            self.last_risk = {}
         hits = 0
         hit_ids: list[str] = []
 
@@ -341,44 +428,70 @@ class ProsePolisher:
                 if n:
                     hits += n
                     hit_ids.append("trim_official_head")
+            if "trim_narration_head" not in disabled:
+                body, n = trim_narration_head(body)
+                if n:
+                    hits += n
+                    hit_ids.append("trim_narration_head")
 
-        # 0. AI 八股清洗（开场白/结构/升华/自我指称/客服腔/职场黑话/冗余/排比）
-        #    放在最前面：结构符号（列表、加粗、标题）先清掉，后续句式规则才准。
+        # 0. AI 八股清洗：止损档只剥格式噪音（加粗/标题/列表/分隔线）
         if self.config.get("清AI八股", True):
-            body, n, ids = self._apply_ai_rules(body, disabled)
+            body, n, ids = self._apply_ai_rules(body, disabled, minimal=minimal)
             if n:
                 hits += n
                 hit_ids.extend(ids)
 
-        # 1. 改句式
-        if self.config.get("改句式", True):
-            for rule in SENTENCE_RULES:
-                if rule["id"] in disabled or rule["id"] in DETECT_ONLY_RULE_IDS:
+        # 1. 改句式：DETECT_ONLY 规则任何档位都只计数；改写需 full 档且开关打开
+        for rule in SENTENCE_RULES:
+            if rule["id"] in disabled:
+                continue
+            if rule["id"] in DETECT_ONLY_RULE_IDS:
+                try:
+                    # 规则里的 pattern 可能是字符串也可能是已编译对象，统一用 re.findall
+                    n = len(re.findall(rule["pattern"], body))
+                except Exception:  # noqa: BLE001
                     continue
-                body, n = rule["pattern"].subn(rule["repl"], body)
                 if n:
                     hits += n
                     hit_ids.append(rule["id"])
+                continue
+            if minimal or not self.config.get("改句式", True):
+                continue
+            body, n = rule["pattern"].subn(rule["repl"], body)
+            if n:
+                hits += n
+                hit_ids.append(rule["id"])
 
-        # 2. 换词
-        if self.config.get("换词", True):
-            for rule in WORD_RULES:
-                if rule["id"] in disabled:
+        # 2. 换词（文学词表：默认止损档不跑，无语境替换会误伤人名词；
+        #    DETECT_ONLY 的规则任何档位都只计数）
+        for rule in WORD_RULES:
+            if rule["id"] in disabled:
+                continue
+            if rule["id"] in DETECT_ONLY_RULE_IDS:
+                try:
+                    n = len(re.findall(rule["pattern"], body))
+                except Exception:  # noqa: BLE001
                     continue
-                pool = rule["pool"]
-                if not pool:
-                    continue
-
-                def _sub(m: re.Match, _rule=rule) -> str:
-                    return self._pick(_rule["id"], _rule["pool"])
-
-                body, n = re.subn(rule["pattern"], _sub, body)
                 if n:
                     hits += n
                     hit_ids.append(rule["id"])
+                continue
+            if minimal or not self.config.get("换词", True):
+                continue
+            pool = rule["pool"]
+            if not pool:
+                continue
 
-        # 3. 删八股短语（换词之后做，先让整句替换走完，再清残留）
-        if self.config.get("删八股短语", True):
+            def _sub(m: re.Match, _rule=rule) -> str:
+                return self._pick(_rule["id"], _rule["pool"])
+
+            body, n = re.subn(rule["pattern"], _sub, body)
+            if n:
+                hits += n
+                hit_ids.append(rule["id"])
+
+        # 3. 删八股短语（句中抠词：默认档不跑，只在 full 档且显式开启时做）
+        if not minimal and self.config.get("删八股短语", True):
             aggressive = bool(self.config.get("激进删词", False))
             phrases = all_phrases(aggressive)
             body, n = _delete_phrases(body, phrases, 0.6 if aggressive else 0.45)
@@ -386,15 +499,16 @@ class ProsePolisher:
                 hits += n
                 hit_ids.append("delete_phrases")
 
-        # 4. 水词配额
-        quota = int(self.config.get("水词配额", 1))
-        body, n = _strip_softeners(body, quota)
-        if n:
-            hits += n
-            hit_ids.append("softeners")
+        # 4. 水词配额（同样是句中抠词，默认档不动）
+        if not minimal:
+            quota = int(self.config.get("水词配额", 1))
+            body, n = _strip_softeners(body, quota)
+            if n:
+                hits += n
+                hit_ids.append("softeners")
 
         # 4. 合并碎句
-        if self.config.get("合并碎句", True):
+        if not minimal and self.config.get("合并碎句", True):
             body, n = _merge_short(body, int(self.config.get("碎句阈值", 8)))
             if n:
                 hits += n
@@ -433,10 +547,9 @@ class ProsePolisher:
             hit_ids.append("punctuation")
 
         body = self._restore(body, vault)
-        try:
-            self.last_risk = detect_high_risk(body)
-        except Exception:  # noqa: BLE001
-            self.last_risk = {}
+        # 演练模式：只统计命中（面板要看数字），正文保持原样不改写
+        if self.config.get("演练模式", False):
+            return text, hits, hit_ids
         if not body.strip():
             # 整条都是八股。短消息（<=12 字，多为单句马屁/结案）保底保留，
             # 否则这条回复会直接消失；长消息才清空，由调用方丢弃。

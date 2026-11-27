@@ -209,13 +209,25 @@ class PersonMemory:
         scope: str = "group",
         name: str = "",
         current_text: str = "",
+        display_name: str = "",
     ) -> str:
-        """生成给 prompt 用的 1~2 行摘要；没有档案或有串味风险时返回空串。"""
+        """生成给 prompt 用的 1~2 行摘要；没有档案或有串味风险时返回空串。
+
+        ``display_name``：私聊时传配置里的「对方称呼」（如「优可」）。给了就以它
+        标识对方并附上 ``UID:xxx`` —— 只塞裸 QQ 昵称时，`/new` 清空记忆后模型
+        会把恋人当成陌生网友怼回去。
+        """
         p = self.get(uid)
         if p is None:
             return ""
         lines: list[str] = []
         who = p.name or _clean(name, 24)
+        if scope == "private":
+            label = _clean(display_name, 24) or who
+            if label and uid:
+                who = f"{label}（UID:{uid}）"
+            elif uid:
+                who = f"UID:{uid}"
 
         bits: list[str] = []
         if p.interests:
