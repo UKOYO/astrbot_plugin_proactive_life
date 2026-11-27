@@ -19,6 +19,11 @@
   3. 上面两条会对同一条消息各记一次，去重统一由 `BotEchoLog.record` 负责。
 
 本模块只做三件事：把消息链打成可读摘要、去重、限长。不碰 LLM、不注册钩子。
+
+补充（v1.5.10）：纯媒体占位可以细化为带语义的标签。``after_message_sent``
+能拿到「本次命中的插件处理器」，于是表情包插件（memelite 等）发出来的那张
+GIF 不再只是一句 ``[表情包]``，而是 ``[发送了表情包: 摸头 (动图/GIF)]``——
+模型在历史动态里才知道「上一条是我自己调表情包插件生成的」，被追问时不瞎猜。
 """
 
 from __future__ import annotations
@@ -82,6 +87,27 @@ _MEDIA_ONLY_LABELS = frozenset(
     {"[图片]", "[表情包]", *_COMPONENT_LABELS.values(), *_SEGMENT_LABELS.values()}
 )
 
+#: 语义化表情包标签前缀：带具体关键词时用它，模型才知道「上一条是我调插件生成的」
+STICKER_SEMANTIC_PREFIX = "[发送了表情包"
+
+#: 表情包插件的来源线索（插件目录名/模块路径/资源路径里出现即认）
+_MEME_SOURCE_HINTS = ("memelite", "meme", "表情包", "表情制作", "sticker")
+
+#: 事件附加信息里可能放表情包关键词的键名线索
+_MEME_KEY_HINTS = ("meme", "sticker", "表情")
+
+#: 文本里显式的 meme 触发写法：``meme 摸头`` / ``表情包 摸头`` / ``#meme:摸头``
+_MEME_TEXT_RE = re.compile(
+    r"(?:^|[\s#])(?:meme|memes|表情包|表情)\s*[:：]?\s*([^\s，。！？、,!?]{1,16})",
+    re.IGNORECASE,
+)
+
+#: 语义标签里「具体到关键词」的档位（见 media_rank）
+_SEMANTIC_RANK = 4
+
+#: 把带括号补充/语义化的媒体标签折回基础占位，便于「是否纯媒体」判定
+_MEDIA_LABEL_RE = re.compile(r"\[(发送了表情包|表情包|图片)[^\[\]]*\]")
+
 #: CQ 码解析（兼容部分插件直接用字符串调用 send_group_msg）
 _CQ_CODE_RE = re.compile(r"\[CQ:([a-zA-Z0-9_]+)(?:,([^\]]*))?\]")
 
@@ -100,6 +126,72 @@ def _image_label(file: str = "", url: str = "", summary: str = "") -> str:
     return "[图片]"
 
 
+def _is_animated_source(file: str = "", url: str = "") -> bool:
+    """这张图是不是动图（GIF/WebP/APNG），含 base64 / data URL 两种内联形态。"""
+    for src in (file, url):
+        low = str(src or "").strip().lower()
+        if not low:
+            continue
+        if any(low.startswith(prefix) for prefix in _STICKER_B64_PREFIXES):
+            return True
+        if low.startswith(("data:image/gif", "data:image/webp", "data:image/apng")):
+            return True
+        head = low[:64]
+        # 裸 base64 的 GIF87a/GIF89a（R0lGOD）/ WebP（UklGR）魔数
+        if "r0lgod" in head or "uklgr" in head:
+            return True
+        tail = low[:400].split("?")[0]
+        if any(tail.endswith(suffix) for suffix in _STICKER_SUFFIXES):
+            return True
+    return False
+
+
+def sticker_label(keyword: str = "", *, animated: bool = False) -> str:
+    """拼语义化表情包标签。
+
+    - 有关键词 + 动图 → ``[发送了表情包: 摸头 (动图/GIF)]``
+    - 只有关键词       → ``[发送了表情包: 摸头]``
+    - 只有动图         → ``[表情包 (动图/GIF)]``
+    - 都没有           → ``[表情包]``
+    """
+    kw = " ".join(str(keyword or "").split())[:16].strip(" :：,，")
+    if kw:
+        if animated:
+            return f"{STICKER_SEMANTIC_PREFIX}: {kw} (动图/GIF)]"
+        return f"{STICKER_SEMANTIC_PREFIX}: {kw}]"
+    return "[表情包 (动图/GIF)]" if animated else "[表情包]"
+
+
+def is_sticker_summary(text: str) -> bool:
+    """这条摘要是不是（或带语义的）表情包占位。"""
+    body = str(text or "").strip()
+    if not body:
+        return False
+    return body.startswith("[表情包") or body.startswith(STICKER_SEMANTIC_PREFIX)
+
+
+def media_rank(text: str) -> int:
+    """纯媒体标签的具体程度（0 = 不是图片/表情包占位）。
+
+    ``[发送了表情包: 摸头 (动图/GIF)]``(4) > ``[表情包 (动图/GIF)]``(3)
+    > ``[表情包]``(2) > ``[图片]``(1)：双路径上报同一条消息时取更具体的那个。
+    """
+    body = str(text or "").strip()
+    if not body:
+        return 0
+    if body.startswith(STICKER_SEMANTIC_PREFIX):
+        return _SEMANTIC_RANK
+    if body.startswith("[表情包"):
+        return 3 if body.startswith(("[表情包 ", "[表情包(")) else 2
+    if body.startswith("[图片"):
+        return 1
+    return 0
+
+
+#: 旧名保留（模块内部与老调用方都在用）
+_media_rank = media_rank
+
+
 def _join(parts: list[str], max_chars: int) -> str:
     """拼成一行并压掉多余空白；超长截断（上下文不该被一条长消息撑爆）。"""
     text = " ".join(str(p) for p in parts if str(p or "").strip())
@@ -111,9 +203,131 @@ def _join(parts: list[str], max_chars: int) -> str:
 
 
 def is_media_only_summary(summary: str) -> bool:
-    """判断摘要是否全由媒体占位标签组成（不含实质正文）。"""
-    tokens = str(summary or "").split()
+    """判断摘要是否全由媒体占位标签组成（不含实质正文）。
+
+    兼容语义化标签：``[发送了表情包: 摸头 (动图/GIF)]``、``[表情包 (动图/GIF)]``
+    都算纯媒体，先把它们折回基础占位再按 token 判定。
+    """
+
+    def _canon(match: re.Match[str]) -> str:
+        kind = str(match.group(1) or "")
+        return " [图片] " if kind == "图片" else " [表情包] "
+
+    text = _MEDIA_LABEL_RE.sub(_canon, str(summary or ""))
+    tokens = text.split()
     return bool(tokens) and all(tok in _MEDIA_ONLY_LABELS for tok in tokens)
+
+
+def _event_extras(event: Any) -> dict:
+    """取事件附加信息（``get_extra()`` 无参返回整份 dict，老版本退回 ``_extras``）。"""
+    if event is None:
+        return {}
+    try:
+        getter = getattr(event, "get_extra", None)
+        extras = getter() if callable(getter) else None
+    except Exception:  # noqa: BLE001
+        extras = None
+    if isinstance(extras, dict):
+        return extras
+    raw = getattr(event, "_extras", None)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _short_keyword(raw: str, *, limit: int = 16) -> str:
+    """把一段文本收成「表情包关键词」；像整句/太长/空 → 空串。"""
+    text = _CQ_CODE_RE.sub(" ", str(raw or ""))
+    text = " ".join(text.replace("@", " ").split()).strip(" :：,，。.!！?？~")
+    if not text or len(text) > limit:
+        return ""
+    if any(ch in text for ch in "。！？!?，,;；\n"):
+        return ""
+    return text
+
+
+def detect_meme_source(event: Any = None, chain: Any = None) -> str:
+    """这条出站纯图是不是表情包插件生成的；命中返回线索词，否则空串。
+
+    查三处：本次事件命中的插件处理器（AstrBot 的 ``activated_handlers``，
+    里面带插件模块路径/函数名）、事件附加信息、以及出站图片的本地路径
+    （memelite 之类会把资源放在 ``memes/`` 下）。
+    """
+    haystack: list[str] = []
+    extras = _event_extras(event)
+    for handler in list(extras.get("activated_handlers") or []):
+        for attr in ("handler_module_path", "handler_full_name", "handler_name"):
+            val = str(getattr(handler, attr, "") or "")
+            if val:
+                haystack.append(val)
+    for key, val in extras.items():
+        haystack.append(str(key or ""))
+        if isinstance(val, str) and val:
+            haystack.append(val[:80])
+    for comp in list(chain or []):
+        if type(comp).__name__ != "Image":
+            continue
+        for attr in ("file", "path", "url"):
+            low = str(getattr(comp, attr, "") or "").strip().lower()
+            # 内联 base64 是噪音（又长又没语义），不参与匹配
+            if not low or low.startswith(("base64://", "data:")):
+                continue
+            haystack.append(low[:200])
+    blob = " ".join(haystack).lower()
+    for hint in _MEME_SOURCE_HINTS:
+        if hint in blob:
+            return hint
+    return ""
+
+
+def detect_meme_keyword(event: Any = None, chain: Any = None) -> str:
+    """嗅出这次表情包用的关键词（「摸头」「rua」…），拿不到返回空串。
+
+    优先级：插件显式写在附加信息里的关键词 > 触发文本里显式的 meme 写法 >
+    确认来源是表情包插件时，把触发它的那句短消息当关键词。
+    """
+    extras = _event_extras(event)
+    for key, val in extras.items():
+        if not isinstance(val, str) or not val.strip():
+            continue
+        if any(hint in str(key or "").lower() for hint in _MEME_KEY_HINTS):
+            kw = _short_keyword(val)
+            if kw:
+                return kw
+    text = str(getattr(event, "message_str", "") or "")
+    matched = _MEME_TEXT_RE.search(text)
+    if matched:
+        kw = _short_keyword(matched.group(1))
+        if kw:
+            return kw
+    if detect_meme_source(event, chain):
+        return _short_keyword(text)
+    return ""
+
+
+def refine_self_media_summary(summary: str, *, event: Any = None, chain: Any = None) -> str:
+    """把纯媒体占位细化为带语义的表情包标签；非纯媒体摘要原样返回。
+
+    典型场景：memelite 之类的表情包插件走管线 yield 一张 GIF，``after_message_sent``
+    只看到 ``[表情包]``。这里结合事件来源与关键词，细化成
+    ``[发送了表情包: 摸头 (动图/GIF)]``，模型在历史动态里才知道「上一条是我
+    调表情包插件生成的」，被追问「这啥」时不至于瞎猜。
+    """
+    body = str(summary or "").strip()
+    if not body or not is_media_only_summary(body) or not is_sticker_summary(body):
+        return body
+    if len(body.split()) != 1:  # 多条媒体混排时不改，免得语义打架
+        return body
+    animated = any(
+        _is_animated_source(
+            str(getattr(comp, "file", "") or getattr(comp, "path", "") or ""),
+            str(getattr(comp, "url", "") or ""),
+        )
+        for comp in list(chain or [])
+        if type(comp).__name__ == "Image"
+    )
+    keyword = detect_meme_keyword(event, chain)
+    if not keyword and not animated:
+        return body
+    return sticker_label(keyword, animated=animated)
 
 
 def _parse_cq_params(raw: str) -> dict[str, str]:
@@ -257,13 +471,7 @@ _PREVIEW_MAX_SIDE = 512
 _PREVIEW_QUALITY = 75
 _PREVIEW_MAX_IMAGES = 2
 
-#: 纯媒体标签的「具体程度」：[表情包] 比 [图片] 更具体，双路径上报时取更具体的那个
-_MEDIA_SPECIFICITY = {"[图片]": 1, "[表情包]": 2}
-
-
-def _media_rank(text: str) -> int:
-    """纯媒体标签的具体程度（0 表示不是图片/表情包占位）。"""
-    return _MEDIA_SPECIFICITY.get(str(text or "").strip(), 0)
+#: 纯媒体标签的「具体程度」见 media_rank（[发送了表情包: 摸头] > [表情包] > [图片]）
 
 
 def _accepts_kw(fn: Any, name: str) -> bool:
@@ -466,8 +674,12 @@ class BotEchoLog:
     坑（实测踩过）：同一条 GIF 表情包发送，``BotSendTap`` 报成 ``[表情包]``、
     ``after_message_sent`` 报成 ``[图片]``，只按文本相等去重会留下两条，
     模型于是以为「发了一张图片和一个表情包」。因此这里对「同为纯媒体、
-    且都属于图片/表情包系」的两次上报做合并，取更具体的标签（[表情包] >
-    [图片]），并把后到的图片预览补到同一条上（通过 ``on_update`` 通知下游）。
+    且都属于图片/表情包系」的两次上报做合并，取更具体的标签（见
+    :func:`media_rank`：``[发送了表情包: 摸头 (动图/GIF)]`` > ``[表情包]`` >
+    ``[图片]``），并把后到的图片预览补到同一条上（通过 ``on_update`` 通知下游）。
+
+    语义标签往往比协议端 tap 晚到（要等 ``after_message_sent`` 才拿到插件来源），
+    所以「升级成带关键词的语义标签」这一种合并额外放宽到 ``media_merge_window``。
     """
 
     def __init__(
@@ -536,8 +748,8 @@ class BotEchoLog:
                     self._emit_update(gid, prev.text, prev.images)
                 return False
             # 同一条发送被两条路径分别识别成 [图片] / [表情包] → 合并成一条
-            if media and prev.media and _media_rank(prev.text) and _media_rank(body):
-                merged = body if _media_rank(body) > _media_rank(prev.text) else prev.text
+            if media and prev.media and media_rank(prev.text) and media_rank(body):
+                merged = body if media_rank(body) > media_rank(prev.text) else prev.text
                 merged_imgs = prev.images or imgs
                 if merged != prev.text or (imgs and not prev.images):
                     prev.text = merged
@@ -545,6 +757,20 @@ class BotEchoLog:
                     self._emit_update(gid, prev.text, prev.images)
                 return False
         if prev is not None:
+            # 语义标签比旧占位更具体时，放宽窗口原地升级同一条：
+            # after_message_sent 拿到插件来源比协议端 tap 晚，别因此多记一条
+            if (
+                media
+                and prev.media
+                and now - prev.at <= self._media_merge_window
+                and media_rank(body) >= _SEMANTIC_RANK
+                and media_rank(body) > media_rank(prev.text)
+            ):
+                prev.text = body
+                if imgs and not prev.images:
+                    prev.images = imgs
+                self._emit_update(gid, prev.text, prev.images)
+                return False
             # 连发同样的图/表情包（刷屏），合并成一条，别把上下文挤爆
             if (
                 media
@@ -732,11 +958,18 @@ class BotSendTap:
 __all__ = [
     "BotEchoLog",
     "BotSendTap",
+    "STICKER_SEMANTIC_PREFIX",
+    "detect_meme_keyword",
+    "detect_meme_source",
     "extract_component_image_sources",
     "extract_image_previews",
     "extract_onebot_image_sources",
     "extract_preview_data_url",
     "is_media_only_summary",
+    "is_sticker_summary",
+    "media_rank",
+    "refine_self_media_summary",
+    "sticker_label",
     "summarize_components",
     "summarize_onebot_segments",
 ]

@@ -142,7 +142,9 @@ def build_life_state_block(
         return ""
 
     lines = [
-        f"{MARKER}（这是你自己的真实状态，聊天时自然带出即可，不要逐条复述）",
+        f"{MARKER}（这是你自己此刻的真实状态，不用汇报、也不用逐条复述；"
+        "只在群友主动问起你在干嘛/在吃什么、或者话题刚好聊到这份上时顺口提一句；"
+        "对方在聊别的事就别硬塞，硬塞一句日程会很出戏）",
         f"- 现在：{now.strftime('%H:%M')}（{str(info.get('time_desc') or '').strip() or _time_desc(now)}）",
         *body,
     ]

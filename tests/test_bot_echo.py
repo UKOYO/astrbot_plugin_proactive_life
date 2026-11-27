@@ -20,11 +20,18 @@ from astrbot.api.message_components import At, Face, Image, Plain, Reply  # noqa
 from astrbot_plugin_proactive_life.modules.bot_echo import (  # noqa: E402
     BotEchoLog,
     BotSendTap,
+    STICKER_SEMANTIC_PREFIX,
+    detect_meme_keyword,
+    detect_meme_source,
     extract_component_image_sources,
     extract_image_previews,
     extract_onebot_image_sources,
     extract_preview_data_url,
     is_media_only_summary,
+    is_sticker_summary,
+    media_rank,
+    refine_self_media_summary,
+    sticker_label,
     summarize_components,
     summarize_onebot_segments,
 )
@@ -433,6 +440,277 @@ class TestCrossPathMediaDedupe(unittest.TestCase):
             tap.uninstall_all()
 
         asyncio.run(run())
+
+
+class _FakeEvent:
+    """模拟 AstrBot 事件：``get_extra()`` 无参返回整份 dict，另有 ``message_str``。"""
+
+    def __init__(self, message_str: str = "", extras: dict | None = None) -> None:
+        self.message_str = message_str
+        self._extras = dict(extras or {})
+
+    def get_extra(self, key=None, default=None):
+        if key is None:
+            return dict(self._extras)
+        return self._extras.get(key, default)
+
+
+class _LegacyEvent:
+    """老版本事件：``get_extra`` 必须带 key，走 ``_extras`` 兜底路径。"""
+
+    def __init__(self, message_str: str = "", extras: dict | None = None) -> None:
+        self.message_str = message_str
+        self._extras = dict(extras or {})
+
+    def get_extra(self, key):
+        return self._extras.get(key)
+
+
+class _MemeHandler:
+    """模拟 memelite 插件命中的处理器（AstrBot 只挂路径/名字属性）。"""
+
+    def __init__(self, path: str, full_name: str = "") -> None:
+        self.handler_module_path = path
+        self.handler_full_name = full_name
+
+
+class TestStickerLabel(unittest.TestCase):
+    """语义化表情包标签：``[发送了表情包: 摸头 (动图/GIF)]``。"""
+
+    def test_label_variants(self):
+        self.assertEqual(sticker_label("摸头", animated=True), "[发送了表情包: 摸头 (动图/GIF)]")
+        self.assertEqual(sticker_label("摸头"), "[发送了表情包: 摸头]")
+        self.assertEqual(sticker_label(animated=True), "[表情包 (动图/GIF)]")
+        self.assertEqual(sticker_label(), "[表情包]")
+        # 关键词收窄：压空白、去首尾标点、最长 16 字
+        self.assertEqual(sticker_label("  摸 头 :："), "[发送了表情包: 摸 头]")
+        self.assertEqual(sticker_label("一" * 40), f"[发送了表情包: {'一' * 16}]")
+        self.assertTrue(sticker_label("摸头").startswith(STICKER_SEMANTIC_PREFIX))
+
+    def test_media_rank_order(self):
+        self.assertEqual(media_rank(""), 0)
+        self.assertEqual(media_rank("今天吃了面"), 0)
+        self.assertEqual(media_rank("[图片]"), 1)
+        self.assertEqual(media_rank("[表情包]"), 2)
+        self.assertEqual(media_rank("[表情包 (动图/GIF)]"), 3)
+        self.assertEqual(media_rank("[发送了表情包: 摸头 (动图/GIF)]"), 4)
+        self.assertGreater(
+            media_rank("[发送了表情包: 摸头]"), media_rank("[表情包 (动图/GIF)]")
+        )
+
+    def test_is_sticker_summary(self):
+        self.assertTrue(is_sticker_summary("[表情包]"))
+        self.assertTrue(is_sticker_summary("[表情包 (动图/GIF)]"))
+        self.assertTrue(is_sticker_summary("[发送了表情包: 摸头]"))
+        self.assertFalse(is_sticker_summary("[图片]"))
+        self.assertFalse(is_sticker_summary("哈哈哈"))
+        self.assertFalse(is_sticker_summary(""))
+
+    def test_media_only_summary_accepts_semantic_labels(self):
+        self.assertTrue(is_media_only_summary("[发送了表情包: 摸头 (动图/GIF)]"))
+        self.assertTrue(is_media_only_summary("[表情包 (动图/GIF)]"))
+        self.assertTrue(is_media_only_summary("[表情包 (动图/GIF)] [图片]"))
+        # 带正文就不是纯媒体了，别把整句话吞掉
+        self.assertFalse(is_media_only_summary("[发送了表情包: 摸头] 哈哈哈"))
+        self.assertFalse(is_media_only_summary("[图片] 看这个"))
+
+
+class TestMemeDetection(unittest.TestCase):
+    """来源/关键词探测：靠事件命中的插件处理器、附加信息、图片本地路径。"""
+
+    def test_source_from_activated_handlers(self):
+        event = _FakeEvent(
+            extras={"activated_handlers": [_MemeHandler("data.plugins.astrbot_plugin_memelite.main")]}
+        )
+        self.assertEqual(detect_meme_source(event), "memelite")
+        # 老事件（get_extra 必须带 key）也能从 _extras 读到
+        legacy = _LegacyEvent(
+            extras={"activated_handlers": [_MemeHandler("plugins/astrbot_plugin_memelite/main.py")]}
+        )
+        self.assertEqual(detect_meme_source(legacy), "memelite")
+
+    def test_source_from_extras_and_image_path(self):
+        self.assertTrue(detect_meme_source(_FakeEvent(extras={"meme_keyword": "摸头"})))
+        chain = [Image(file="/data/memes/摸头.gif")]
+        self.assertTrue(detect_meme_source(None, chain))
+        # 普通相册图不认
+        self.assertEqual(detect_meme_source(_FakeEvent(), [Image(file="a.png")]), "")
+
+    def test_source_ignores_inline_base64(self):
+        # 内联 base64 是噪音，不能因为它里面恰好有字节就误判来源
+        chain = [Image(file="base64://iVBORw0KGgoAAAANSUhEUg")]
+        self.assertEqual(detect_meme_source(_FakeEvent(), chain), "")
+        self.assertEqual(detect_meme_source(None), "")
+
+    def test_keyword_from_extras_first(self):
+        event = _FakeEvent(
+            message_str="meme 别的词",
+            extras={"meme_keyword": "摸头"},
+        )
+        self.assertEqual(detect_meme_keyword(event), "摸头")
+        self.assertEqual(detect_meme_keyword(_FakeEvent(extras={"sticker": " rua "})), "rua")
+
+    def test_keyword_from_explicit_text(self):
+        self.assertEqual(detect_meme_keyword(_FakeEvent(message_str="meme 摸头")), "摸头")
+        self.assertEqual(detect_meme_keyword(_FakeEvent(message_str="表情包：rua 一下")), "rua")
+        self.assertEqual(detect_meme_keyword(_FakeEvent(message_str="#meme:摸头")), "摸头")
+
+    def test_keyword_fallback_only_when_source_confirmed(self):
+        handler = _MemeHandler("plugins/astrbot_plugin_memelite/main.py")
+        event = _FakeEvent(
+            message_str="摸摸头", extras={"activated_handlers": [handler]}
+        )
+        self.assertEqual(detect_meme_keyword(event), "摸摸头")
+        # 来源没确认时，不能把群友那句话当关键词
+        self.assertEqual(detect_meme_keyword(_FakeEvent(message_str="摸摸头")), "")
+
+    def test_keyword_rejects_long_or_sentence_text(self):
+        # 附加信息里塞了整句话（超 16 字）→ 不当关键词
+        long_text = "今天天气真好啊我们出去玩吧顺便再聊两句"
+        self.assertGreater(len(long_text), 16)
+        self.assertEqual(detect_meme_keyword(_FakeEvent(extras={"meme": long_text})), "")
+        # 句中带标点 → 是整句不是关键词
+        self.assertEqual(detect_meme_keyword(_FakeEvent(extras={"meme": "我今天，心情不错"})), "")
+        # 首尾标点剥掉后仍是短词 → 保留
+        self.assertEqual(detect_meme_keyword(_FakeEvent(extras={"meme": " 摸头！"})), "摸头")
+        # 文本路径最多截到 16 字，不会把整句塞进标签
+        kw = detect_meme_keyword(_FakeEvent(message_str="meme " + long_text))
+        self.assertLessEqual(len(kw), 16)
+        self.assertEqual(detect_meme_keyword(_FakeEvent(message_str="随便聊聊")), "")
+
+
+class TestRefineSelfMediaSummary(unittest.TestCase):
+    """after_message_sent 的摘要细化：只在「纯媒体 + 有线索」时才改写。"""
+
+    _MEME_EXTRAS = {
+        "activated_handlers": [_MemeHandler("plugins/astrbot_plugin_memelite/main.py")]
+    }
+
+    def test_non_media_summary_untouched(self):
+        event = _FakeEvent(extras=self._MEME_EXTRAS)
+        self.assertEqual(refine_self_media_summary("欢迎小明进群", event=event), "欢迎小明进群")
+        self.assertEqual(refine_self_media_summary("", event=event), "")
+
+    def test_keyword_and_animated_gif(self):
+        event = _FakeEvent(message_str="meme 摸头", extras=self._MEME_EXTRAS)
+        chain = [Image(file="base64://" + _animated_gif_b64())]
+        self.assertEqual(
+            refine_self_media_summary("[表情包]", event=event, chain=chain),
+            "[发送了表情包: 摸头 (动图/GIF)]",
+        )
+
+    def test_keyword_without_animation(self):
+        event = _FakeEvent(message_str="meme 摸头", extras=self._MEME_EXTRAS)
+        chain = [Image(file="a.png")]
+        self.assertEqual(
+            refine_self_media_summary("[表情包]", event=event, chain=chain),
+            "[发送了表情包: 摸头]",
+        )
+
+    def test_animated_without_keyword(self):
+        chain = [Image(file="base64://" + _animated_gif_b64())]
+        self.assertEqual(
+            refine_self_media_summary("[表情包]", chain=chain), "[表情包 (动图/GIF)]"
+        )
+
+    def test_no_clue_keeps_plain_label(self):
+        # 既没有来源线索也没有动图 → 保持原样，别编关键词
+        self.assertEqual(
+            refine_self_media_summary("[表情包]", event=_FakeEvent(), chain=[Image(file="a.png")]),
+            "[表情包]",
+        )
+
+    def test_plain_image_label_not_promoted(self):
+        # 普通照片不是表情包，不该被贴成「发送了表情包」
+        event = _FakeEvent(extras=self._MEME_EXTRAS)
+        self.assertEqual(
+            refine_self_media_summary("[图片]", event=event, chain=[Image(file="a.png")]),
+            "[图片]",
+        )
+
+    def test_mixed_multi_media_left_alone(self):
+        chain = [Image(file="base64://" + _animated_gif_b64()), Image(file="b.png")]
+        self.assertEqual(
+            refine_self_media_summary("[表情包] [图片]", chain=chain), "[表情包] [图片]"
+        )
+
+
+class TestSemanticUpgradeInEchoLog(unittest.TestCase):
+    """语义标签比协议端 tap 晚到：窗口内原地升级，不许多记一条。"""
+
+    def test_upgrade_same_entry_within_merge_window(self):
+        seen: list[tuple[str, str]] = []
+        updated: list[tuple[str, str, list[str]]] = []
+        log = BotEchoLog(
+            on_record=lambda g, t: seen.append((g, t)),
+            on_update=lambda g, t, images=None: updated.append((g, t, list(images or []))),
+            dedupe_window=2.5,
+            media_merge_window=8.0,
+        )
+        self.assertTrue(log.record("g1", "[表情包]", media=True))
+        # 4 秒后 after_message_sent 才报出语义标签（已超 dedupe_window）
+        log._last["g1"].at = time.time() - 4.0
+        self.assertFalse(
+            log.record("g1", "[发送了表情包: 摸头 (动图/GIF)]", media=True)
+        )
+        self.assertEqual(seen, [("g1", "[表情包]")])
+        self.assertEqual(log.last("g1"), "[发送了表情包: 摸头 (动图/GIF)]")
+        self.assertEqual(
+            updated, [("g1", "[发送了表情包: 摸头 (动图/GIF)]", [])]
+        )
+
+    def test_upgrade_beyond_merge_window_records_new_entry(self):
+        log = BotEchoLog(dedupe_window=2.5, media_merge_window=8.0)
+        self.assertTrue(log.record("g1", "[表情包]", media=True))
+        log._last["g1"].at = time.time() - 20.0
+        # 超出合并窗口 → 当成另一条真实发送
+        self.assertTrue(log.record("g1", "[发送了表情包: 摸头 (动图/GIF)]", media=True))
+
+
+class TestAfterMessageSentIntegration(unittest.TestCase):
+    """main.on_after_message_sent 真的把语义标签喂进了 BotEchoLog。"""
+
+    def test_hook_records_semantic_sticker_label(self):
+        async def run():
+            from astrbot_plugin_proactive_life.main import ProactiveLifePlugin
+
+            plugin = object.__new__(ProactiveLifePlugin)
+            plugin._stop_event = asyncio.Event()
+            plugin._module_on = lambda _name: True
+            recorded: list[tuple[str, str]] = []
+            plugin.bot_echo = BotEchoLog(on_record=lambda g, t: recorded.append((g, t)))
+
+            extras = {
+                "activated_handlers": [_MemeHandler("plugins/astrbot_plugin_memelite/main.py")]
+            }
+
+            class _HookEvent:
+                message_str = "meme 摸头"
+                unified_msg_origin = "aiocqhttp:GroupMessage:88888"
+
+                def get_extra(self, key=None, default=None):
+                    if key is None:
+                        return dict(extras)
+                    return extras.get(key, default)
+
+                def get_result(self):
+                    return SimpleNamespace(
+                        chain=[Image(file="base64://" + _animated_gif_b64())],
+                        get_plain_text=lambda: "",
+                    )
+
+                def is_private_chat(self):
+                    return False
+
+                def get_group_id(self):
+                    return "88888"
+
+            await plugin.on_after_message_sent(_HookEvent())
+            return recorded
+
+        self.assertEqual(
+            asyncio.run(run()), [("88888", "[发送了表情包: 摸头 (动图/GIF)]")]
+        )
 
 
 if __name__ == "__main__":

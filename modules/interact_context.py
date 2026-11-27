@@ -26,12 +26,30 @@ from typing import Any
 RECENT_ECHO_MARKER = "【本群刚才的动态】"
 
 #: 纯媒体标签的具体程度：[表情包] 比 [图片] 更具体，双路径上报时取更具体的那个
-#: （与 modules.bot_echo 的判定保持一致；这里只做标签排序，不重复媒体逻辑）
-_MEDIA_SPECIFICITY = {"[图片]": 1, "[表情包]": 2}
+#: （标签规则统一由 modules.bot_echo 维护，这里只做排序，不重复媒体逻辑）
+try:  # 极端加载方式（非包内导入）下退回本地兜底表
+    from .bot_echo import media_rank as _shared_media_rank
+except Exception:  # noqa: BLE001
+    _shared_media_rank = None  # type: ignore[assignment]
+
+#: 兜底用的具体程度表，档位与 bot_echo.media_rank 保持一致
+_MEDIA_SPECIFICITY = {"[图片]": 1, "[表情包]": 2, "[表情包 (动图/GIF)]": 3}
+
+#: 带关键词的语义标签前缀（``[发送了表情包: 摸头 (动图/GIF)]``）
+_SEMANTIC_STICKER_PREFIX = "[发送了表情包"
 
 
 def _media_rank(text: str) -> int:
-    return _MEDIA_SPECIFICITY.get(str(text or "").strip(), 0)
+    """纯媒体标签的具体程度（0 表示不是图片/表情包占位）。"""
+    body = str(text or "").strip()
+    if _shared_media_rank is not None:
+        try:
+            return int(_shared_media_rank(body))
+        except Exception:  # noqa: BLE001 - 兜底表也能用
+            pass
+    if body.startswith(_SEMANTIC_STICKER_PREFIX):
+        return 4
+    return _MEDIA_SPECIFICITY.get(body, 0)
 
 
 @dataclass
@@ -158,8 +176,9 @@ class InteractContext:
         """原地补全最后一条 ``self`` 项（不新增条目）。
 
         用于双路径上报去重：协议端 tap 先报 ``[图片]``、``after_message_sent``
-        再报 ``[表情包]`` 并带上预览时，把更具体的标签与图片补到同一条上，
-        否则模型会以为「发了一张图片和一个表情包」。
+        再报 ``[表情包]``（或更具体的 ``[发送了表情包: 摸头 (动图/GIF)]``）
+        并带上预览时，把更具体的标签与图片补到同一条上，否则模型会以为
+        「发了一张图片和一个表情包」。
 
         返回 True 表示确实改动了内容。
         """
@@ -422,7 +441,8 @@ def build_recent_echo_block(
     lines = [header, *rendered]
     if has_attached_images:
         lines.append(
-            f"（附带的图片就是上面标「{me}」刚发出去的那张图，直接结合图的内容来回应。）"
+            f"（附带的图片是上面标「{me}」刚发出的那张，仅作背景参考，"
+            "按平时聊天口吻自然接话，切忌像做题家一样逐个细节赏析画面）"
         )
     return "\n".join(lines)
 

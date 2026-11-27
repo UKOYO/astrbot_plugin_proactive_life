@@ -276,7 +276,10 @@ class TestRelativeTimeAndHeaderHygiene(unittest.TestCase):
         block = build_recent_echo_block(
             self._items(now), bot_name="唯笑", now=now, has_attached_images=True
         )
-        self.assertIn("附带的图片就是上面标「我（唯笑）」刚发出去的那张图", block)
+        self.assertIn("附带的图片是上面标「我（唯笑）」刚发出的那张", block)
+        # 不能再逼模型「直接结合图的内容来回应」——看图说话味儿太重
+        self.assertNotIn("直接结合图的内容来回应", block)
+        self.assertIn("仅作背景参考", block)
         without = build_recent_echo_block(self._items(now), bot_name="唯笑", now=now)
         self.assertNotIn("附带的图片", without)
 
@@ -337,6 +340,53 @@ class TestUpdateLastSelf(unittest.TestCase):
         ctx.observe("g1", "u1", "只有群友说话")
         self.assertFalse(ctx.update_last_self("g1", text="[表情包]"))
         self.assertFalse(ctx.update_last_self("empty-group", text="x"))
+
+    def test_semantic_label_upgrades_plain_sticker(self):
+        """after_message_sent 后到的语义标签要能覆盖协议端 tap 的 [表情包]。"""
+        ctx = InteractContext(window=6, ttl=20.0, self_ttl=90.0)
+        ctx.observe_self("g1", "[表情包]", bot_name="唯笑")
+        self.assertTrue(
+            ctx.update_last_self("g1", text="[发送了表情包: 摸头 (动图/GIF)]")
+        )
+        self_items = [it for it in ctx.recent("g1") if it.is_self()]
+        self.assertEqual(len(self_items), 1)
+        self.assertEqual(self_items[0].text, "[发送了表情包: 摸头 (动图/GIF)]")
+        # 反向：语义标签不会被更粗糙的占位覆盖
+        self.assertFalse(ctx.update_last_self("g1", text="[表情包]"))
+        self.assertEqual(ctx.recent("g1")[-1].text, "[发送了表情包: 摸头 (动图/GIF)]")
+
+
+class TestMediaRankSharedRule(unittest.TestCase):
+    """标签具体程度由 bot_echo 统一维护，interact_context 只复用，不另写一套。"""
+
+    def test_rank_matches_bot_echo(self):
+        from astrbot_plugin_proactive_life.modules import interact_context
+        from astrbot_plugin_proactive_life.modules.bot_echo import media_rank
+
+        for text in (
+            "",
+            "[图片]",
+            "[表情包]",
+            "[表情包 (动图/GIF)]",
+            "[发送了表情包: 摸头]",
+            "[发送了表情包: 摸头 (动图/GIF)]",
+            "欢迎进群",
+        ):
+            self.assertEqual(interact_context._media_rank(text), media_rank(text), text)
+
+    def test_fallback_table_when_shared_rule_unavailable(self):
+        from astrbot_plugin_proactive_life.modules import interact_context
+
+        saved = interact_context._shared_media_rank
+        try:
+            interact_context._shared_media_rank = None
+            self.assertEqual(interact_context._media_rank("[图片]"), 1)
+            self.assertEqual(interact_context._media_rank("[表情包]"), 2)
+            self.assertEqual(interact_context._media_rank("[表情包 (动图/GIF)]"), 3)
+            self.assertEqual(interact_context._media_rank("[发送了表情包: 摸头]"), 4)
+            self.assertEqual(interact_context._media_rank("欢迎进群"), 0)
+        finally:
+            interact_context._shared_media_rank = saved
 
 
 class TestInjectTempImages(unittest.TestCase):
@@ -498,7 +548,7 @@ class TestLifeStateInjectionOrder(unittest.TestCase):
 
             echo_text = texts[echo_idx]
             self.assertIn("我（唯笑）：[表情包]", echo_text)
-            self.assertIn("附带的图片就是上面标", echo_text)
+            self.assertIn("附带的图片是上面标", echo_text)
             self.assertNotIn("入群欢迎", echo_text)
 
             image_urls = [

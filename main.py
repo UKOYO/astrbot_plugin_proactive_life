@@ -112,7 +112,7 @@ class _LiveConfig:
     "astrbot_plugin_proactive_life",
     "keyou",
     "自主生活与主动中枢",
-    "1.5.9",
+    "1.5.10",
     "一体化活人感中枢：贯通入站准入、主动生活、天气穿搭日程、人物情绪与群黑话感知、出站清洗与真人节奏",
 )
 class ProactiveLifePlugin(Star, RhythmMixin):
@@ -787,10 +787,16 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             from .modules.bot_echo import (
                 extract_component_image_sources,
                 extract_image_previews,
+                refine_self_media_summary,
                 summarize_components,
             )
 
             summary = summarize_components(chain) if chain else txt
+            if summary:
+                # 表情包插件（memelite 等）走管线发出的纯图：把 [表情包] 细化成
+                # 「[发送了表情包: 摸头 (动图/GIF)]」。靠事件命中的插件处理器
+                # （activated_handlers）与触发词判断来源，拿不到线索时原样保留。
+                summary = refine_self_media_summary(summary, event=event, chain=chain)
 
             if event.is_private_chat():
                 if not self._module_on("私聊") or not txt:

@@ -77,6 +77,14 @@ class TestBuildLifeStateBlock:
         assert "今日日程：" in block
         assert "09:00 写代码" in block
 
+    def test_header_softens_hard_push(self):
+        # 弱化「硬塞日程」：只在被问到/聊到那份上时顺口提一句，别强行汇报
+        block = build_life_state_block(BASE_CFG, now=NOW, info=INFO)
+        head = block.splitlines()[0]
+        assert "顺口提一句" in head
+        assert "别硬塞" in head
+        assert "不要逐条复述" not in head  # 旧文案：只说别复述，模型照样硬塞
+
     def test_schedule_truncation_is_clamped_to_min(self):
         # 配置写 10 字，实际按 60 字下限截断，避免日程只剩一句话
         cfg = {**BASE_CFG, "日程_被动注入字数": 10}
