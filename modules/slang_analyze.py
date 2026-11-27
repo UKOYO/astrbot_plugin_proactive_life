@@ -19,6 +19,7 @@ _LOG = "proactive_life | 黑话解析"
 SYSTEM_PROMPT = """你是群聊黑话解析助手。任务：判断给定高频词里哪些是真正的群黑话/梗/网络用语，并解释含义。
 重要的判定标准：只有「看不懂字面意思、需要解释才知道在说什么」的词才算黑话。
 像「哈哈哈」「好的」「笑死」「牛逼」「为什么」这种通俗易懂的口水词、日常用语，一律 is_slang=false。
+人名、群友昵称、网名、真名、角色名、单纯称呼（如小明、老王、张总、群主、任何人的名字或外号）一律不是黑话，必须标记 is_slang=false。
 可以用工具搜索确认网络流行语的真实含义（如果提供了搜索/MCP 工具）。
 只输出 JSON 数组，每项：{"word":"词","meaning":"简短含义","is_slang":true/false}。
 不要输出其它文字。"""
@@ -60,6 +61,7 @@ async def analyze_slang(
     *,
     event: Any = None,
     umo: str = "",
+    known_names: list[str] | None = None,
 ) -> dict:
     """解析一组高频词，返回 {ok, items, reason}。"""
     words = [str(w).strip() for w in (words or []) if str(w).strip()][:30]
@@ -73,6 +75,8 @@ async def analyze_slang(
         if prov is None:
             return {"ok": False, "items": [], "reason": "没有可用的模型"}
         prompt = "请解析这些群里高频词：\n" + "、".join(words)
+        if known_names:
+            prompt += "\n\n已知群成员/熟人名字（绝对不是黑话，若出现在词表中一律 is_slang=false）：\n" + "、".join(known_names[:60])
 
         tool_set = _tool_set(context)
         text = ""

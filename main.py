@@ -679,8 +679,12 @@ class ProactiveLifePlugin(Star, RhythmMixin):
                     from .modules.slang import SlangMiner
                     slang = SlangMiner(int(self.cfg.get("黑话_最小命中", 3) or 3))
                     self._slang = slang
+                gid_s = str(event.get_group_id() or "")
                 slang.observe(
-                    str(event.get_group_id() or ""), str(getattr(event, "message_str", "") or "")
+                    gid_s,
+                    str(getattr(event, "message_str", "") or ""),
+                    sender_name=str(event.get_sender_name() or ""),
+                    extra_names=self._collect_slang_names(gid_s, event),
                 )
             except Exception as e:  # noqa: BLE001
                 logger.debug("proactive_life | 群黑话采集异常: %s", e)
@@ -935,6 +939,53 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         else:
             logger.warning("proactive_life | 当天日程自动生成失败，可在面板手动重试")
 
+    def _collect_slang_names(self, gid: str = "", event=None) -> list[str]:
+        """汇总已知人名（群成员昵称、人物档案、艾特对象、机器人名），供黑话采集过滤。"""
+        names: list[str] = []
+        if event is not None:
+            try:
+                for seg in event.get_messages() or ():
+                    if type(seg).__name__.lower() == "at":
+                        for attr in ("name", "nickname", "display_name"):
+                            val = getattr(seg, attr, None)
+                            if val:
+                                names.append(str(val))
+            except Exception:
+                pass
+        gh = getattr(self, "group_h", None)
+        if gh is not None:
+            try:
+                bot_name = getattr(gh, "_bot_name", None)
+                if callable(bot_name):
+                    bn = bot_name()
+                    if bn:
+                        names.append(str(bn))
+            except Exception:
+                pass
+            try:
+                mstore = getattr(gh, "_members", None)
+                data = getattr(mstore, "_data", None)
+                if isinstance(data, dict):
+                    for sess_members in data.values():
+                        if isinstance(sess_members, dict):
+                            for prof in sess_members.values():
+                                pname = getattr(prof, "name", "")
+                                if pname:
+                                    names.append(str(pname))
+            except Exception:
+                pass
+        pm = getattr(self, "person_memory", None)
+        people = getattr(pm, "_people", None) if pm is not None else None
+        if isinstance(people, dict):
+            for prof in people.values():
+                pname = getattr(prof, "name", "")
+                if pname:
+                    names.append(str(pname))
+                for alias in getattr(prof, "aliases", ()) or ():
+                    if alias:
+                        names.append(str(alias))
+        return names
+
     async def _auto_analyze_slang(self, now: datetime.datetime) -> None:
         """自动解析新挖到的黑话：复用调度循环，30 分钟节流，只解析没解析过的词。"""
         if not self._module_on("黑话") or not bool(self.cfg.get("黑话_自动解析", True)):
@@ -958,10 +1009,12 @@ class ProactiveLifePlugin(Star, RhythmMixin):
                 return
             from .modules.slang_analyze import analyze_slang
 
+            slang.register_names(self._collect_slang_names())
             result = await asyncio.wait_for(
                 analyze_slang(
                     self.context, self.cfg, words[:12], event=None,
                     umo=str((self.cfg.get("对谁主动") or [""])[0] or ""),
+                    known_names=slang.known_names(),
                 ),
                 timeout=90,
             )

@@ -247,6 +247,9 @@
     slangClearAll: document.getElementById("slangClearAll"),
     slangAnalyze: document.getElementById("slangAnalyze"),
     slangAnalysis: document.getElementById("slangAnalysis"),
+    slangBulk: document.getElementById("slangBulk"),
+    slangSelectAll: document.getElementById("slangSelectAll"),
+    slangDeleteSelected: document.getElementById("slangDeleteSelected"),
     blacklistView: document.getElementById("blacklistView"),
     outboundHistory: document.getElementById("outboundHistory"),
     ruleCatalog: document.getElementById("ruleCatalog"),
@@ -863,6 +866,20 @@
     ).join('');
   }
 
+  const selectedSlangKeys = new Set();
+
+  function syncSlangBulkUI(total) {
+    const n = selectedSlangKeys.size;
+    if (el.slangDeleteSelected) {
+      el.slangDeleteSelected.disabled = n === 0;
+      el.slangDeleteSelected.textContent = n > 0 ? `删除已选 (${n})` : "删除已选";
+    }
+    if (el.slangSelectAll) {
+      el.slangSelectAll.checked = total > 0 && n === total;
+      el.slangSelectAll.indeterminate = n > 0 && n < total;
+    }
+  }
+
   function renderSlang(d) {
     const list = el.slangList, meta = el.slangMeta;
     if (!list) return;
@@ -881,9 +898,22 @@
             '<div class="slang__an" data-word="' + esc(a.word || '') + '">' +
               '<b>' + esc(a.word || '') + '</b>' +
               '<span class="slang__meaning" title="点击修改释义">' + esc(a.meaning || '（点此填写释义）') + '</span>' +
+              '<button type="button" class="slang__del slang__an-del" title="删除此条黑话">×</button>' +
             '</div>'
           ).join('')
         : '<div class="motive__empty">模型会每 30 分钟自动解析新词（可点上方「立即解析」手动触发）</div>';
+      box.querySelectorAll('.slang__an-del').forEach((btn) => {
+        btn.onclick = async () => {
+          const row = btn.closest('.slang__an');
+          const word = row && row.dataset.word;
+          if (!word) return;
+          try {
+            const resp = await bridge.apiPost(`${API}/action`, { action: "slang_delete", word });
+            toast((resp && resp.message) || "已删除", !resp || !resp.ok);
+            await refresh();
+          } catch (err) { toast(err.message || String(err), true); }
+        };
+      });
       // 点击释义 -> 就地编辑，失焦/回车保存
       box.querySelectorAll('.slang__meaning').forEach((span) => {
         span.addEventListener('click', () => {
@@ -910,29 +940,55 @@
         });
       });
     }
+    const validKeys = new Set(recs.map((r) => `${r.group || ""}\0${r.word || ""}`));
+    for (const k of Array.from(selectedSlangKeys)) {
+      if (!validKeys.has(k)) selectedSlangKeys.delete(k);
+    }
     if (!recs.length) {
+      if (el.slangBulk) el.slangBulk.hidden = true;
       list.innerHTML = '<div class="motive__empty">还没有黑话记录，群里多聊几句就能挖到</div>';
+      syncSlangBulkUI(0);
       return;
     }
-    list.innerHTML = recs.map((r) =>
-      '<div class="slang__row" data-group="' + esc(r.group || '') + '">' +
-        '<span class="slang__word">' + esc(r.word || '') + '</span>' +
-        '<span class="slang__hits">' + esc(String(r.hits || 0)) + ' 次</span>' +
-        '<span class="slang__group">' + esc(r.group || '') + '</span>' +
-        '<button type="button" class="slang__del" title="清空此群">×</button>' +
-      '</div>'
-    ).join('');
+    if (el.slangBulk) el.slangBulk.hidden = false;
+    list.innerHTML = recs.map((r) => {
+      const k = `${r.group || ""}\0${r.word || ""}`;
+      const checked = selectedSlangKeys.has(k) ? " checked" : "";
+      return (
+        '<div class="slang__row" data-group="' + esc(r.group || '') + '" data-word="' + esc(r.word || '') + '">' +
+          '<input type="checkbox" class="slang__chk slang__row-chk" aria-label="勾选 ' + esc(r.word || '') + '"' + checked + ' />' +
+          '<span class="slang__word">' + esc(r.word || '') + '</span>' +
+          '<span class="slang__hits">' + esc(String(r.hits || 0)) + ' 次</span>' +
+          '<span class="slang__group">' + esc(r.group || '') + '</span>' +
+          '<button type="button" class="slang__del" title="删除此条黑话">×</button>' +
+        '</div>'
+      );
+    }).join('');
+    list.querySelectorAll('.slang__row-chk').forEach((chk) => {
+      chk.addEventListener('change', () => {
+        const row = chk.closest('.slang__row');
+        if (!row) return;
+        const k = `${row.dataset.group || ""}\0${row.dataset.word || ""}`;
+        if (chk.checked) selectedSlangKeys.add(k);
+        else selectedSlangKeys.delete(k);
+        syncSlangBulkUI(recs.length);
+      });
+    });
     list.querySelectorAll('.slang__del').forEach((btn) => {
       btn.onclick = async () => {
         const row = btn.closest('.slang__row');
         if (!row) return;
+        const word = row.dataset.word || "";
+        const group = row.dataset.group || "";
         try {
-          const resp = await bridge.apiPost(`${API}/action`, { action: "slang_clear", group: row.dataset.group });
-          toast((resp && resp.message) || "已清空", !resp || !resp.ok);
-          await Promise.all([loadRemotePrefs(), refresh()]);
+          const resp = await bridge.apiPost(`${API}/action`, { action: "slang_delete", word, group });
+          selectedSlangKeys.delete(`${group}\0${word}`);
+          toast((resp && resp.message) || "已删除", !resp || !resp.ok);
+          await refresh();
         } catch (err) { toast(err.message || String(err), true); }
       };
     });
+    syncSlangBulkUI(recs.length);
   }
 
   function renderWorker(w, m) {
@@ -1940,9 +1996,35 @@
         await refresh();
       } catch (err) { toast(err.message || String(err), true); }
     });
+    if (el.slangSelectAll) el.slangSelectAll.addEventListener("change", () => {
+      const checked = el.slangSelectAll.checked;
+      const rows = el.slangList ? Array.from(el.slangList.querySelectorAll(".slang__row")) : [];
+      rows.forEach((row) => {
+        const k = `${row.dataset.group || ""}\0${row.dataset.word || ""}`;
+        const chk = row.querySelector(".slang__row-chk");
+        if (chk) chk.checked = checked;
+        if (checked) selectedSlangKeys.add(k);
+        else selectedSlangKeys.delete(k);
+      });
+      syncSlangBulkUI(rows.length);
+    });
+    if (el.slangDeleteSelected) el.slangDeleteSelected.addEventListener("click", async () => {
+      if (!selectedSlangKeys.size) return;
+      const items = Array.from(selectedSlangKeys).map((k) => {
+        const idx = k.indexOf("\0");
+        return { group: k.slice(0, idx), word: k.slice(idx + 1) };
+      });
+      try {
+        const resp = await bridge.apiPost(`${API}/action`, { action: "slang_delete_batch", items });
+        selectedSlangKeys.clear();
+        toast((resp && resp.message) || "已删除", !resp || !resp.ok);
+        await refresh();
+      } catch (err) { toast(err.message || String(err), true); }
+    });
     if (el.slangClearAll) el.slangClearAll.addEventListener("click", async () => {
       try {
         const resp = await bridge.apiPost(`${API}/action`, { action: "slang_clear" });
+        selectedSlangKeys.clear();
         toast((resp && resp.message) || "已清空", !resp || !resp.ok);
         await refresh();
       } catch (err) { toast(err.message || String(err), true); }
@@ -1989,7 +2071,7 @@
       toast(err.message || String(err), true);
       return;
     }
-    await refresh();
+    await Promise.all([loadRemotePrefs(), refresh()]);
     // 页面隐藏时停掉轮询，回来立刻刷新一次，省掉后台无谓请求
     function startTimer() {
       if (timer) return;

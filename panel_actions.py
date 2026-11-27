@@ -47,9 +47,16 @@ async def do_action(plugin, payload: dict) -> dict:
         try:
             from .modules.slang_analyze import analyze_slang
 
+            collector = getattr(plugin, "_collect_slang_names", None)
+            if callable(collector):
+                try:
+                    slang.register_names(collector())
+                except Exception:
+                    pass
             result = await analyze_slang(
                 plugin.context, plugin.cfg, words,
                 event=None, umo=str(plugin.cfg.get("对谁主动", [""])[0] if (plugin.cfg.get("对谁主动") or []) else ""),
+                known_names=slang.known_names(),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("proactive_life | 黑话解析调用失败: %s", exc)
@@ -58,6 +65,37 @@ async def do_action(plugin, payload: dict) -> dict:
             return {"ok": False, "message": str(result.get("reason") or "解析未成功")}
         n = slang.set_analysis(result["items"])
         return {"ok": True, "message": f"已解析 {n} 个词（含搜索/MCP 工具）", "items": result["items"]}
+
+    if action == "slang_delete":
+        word = str(payload.get("word", "") or "").strip()
+        gid = str(payload.get("group", "") or "").strip() or None
+        if not word:
+            return {"ok": False, "message": "缺少要删除的词"}
+        slang = getattr(plugin, "_slang", None)
+        if slang is None:
+            return {"ok": False, "message": "黑话记录尚未初始化"}
+        try:
+            n = slang.remove(word, gid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("proactive_life | 删除单条黑话失败: %s", exc)
+            return {"ok": False, "message": "删除失败，详情见日志"}
+        if n <= 0:
+            return {"ok": False, "message": f"未找到黑话「{word}」"}
+        return {"ok": True, "message": f"已删除黑话「{word}」"}
+
+    if action == "slang_delete_batch":
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return {"ok": False, "message": "请先勾选要删除的黑话"}
+        slang = getattr(plugin, "_slang", None)
+        if slang is None:
+            return {"ok": False, "message": "黑话记录尚未初始化"}
+        try:
+            n = slang.remove_many(items)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("proactive_life | 批量删除黑话失败: %s", exc)
+            return {"ok": False, "message": "批量删除失败，详情见日志"}
+        return {"ok": True, "message": f"已删除 {n} 条黑话"}
 
     if action == "slang_clear":
         gid = str(payload.get("group", "") or "").strip()

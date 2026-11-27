@@ -993,16 +993,54 @@ body.is-monospaced .sec__head span { font-family: var(--mono); }
 .motive__empty { font-size: var(--t-label); opacity: .45; padding: 12px 0; }
 
 /* 黑话记录/解析 */
-.slang__bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.slang__bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.slang__actions { display: inline-flex; align-items: center; gap: 10px; }
+.slang__bulk {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0 8px; margin-bottom: 2px;
+  border-bottom: 1px solid var(--c-line);
+  font-size: 12px;
+}
+.slang__bulk[hidden] { display: none; }
+.slang__check-all {
+  display: inline-flex; align-items: center; gap: 8px;
+  cursor: pointer; user-select: none; opacity: .75;
+}
+.slang__check-all:hover { opacity: 1; }
+.slang__chk {
+  appearance: none; -webkit-appearance: none;
+  width: 13px; height: 13px; margin: 0;
+  border: 1px solid var(--c-line-s);
+  background: transparent;
+  cursor: pointer; position: relative; flex: none;
+  transition: background .15s ease, border-color .15s ease;
+}
+.slang__chk:hover { border-color: var(--c-text); }
+.slang__chk:checked { background: var(--c-text); border-color: var(--c-text); }
+.slang__chk:checked::after {
+  content: ""; position: absolute; left: 3px; top: 1px;
+  width: 4px; height: 7px;
+  border: solid var(--c-bg); border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+.slang__chk:indeterminate { border-color: var(--c-text); }
+.slang__chk:indeterminate::after {
+  content: ""; position: absolute; left: 2px; right: 2px; top: 5px;
+  height: 1.5px; background: var(--c-text);
+}
 .slang-list { display: flex; flex-direction: column; }
-.slang__row { display: grid; grid-template-columns: 1fr auto 1.6fr auto; gap: 14px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--c-line); font-size: 13px; }
+.slang__row {
+  display: grid; grid-template-columns: auto 1fr auto 1.4fr auto;
+  gap: 12px; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid var(--c-line); font-size: 13px;
+}
 .slang__word { font-weight: 600; }
 .slang__hits { font-family: var(--mono); opacity: .5; font-size: 12px; }
 .slang__group { font-family: var(--mono); opacity: .4; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.slang__del { border: 0; background: none; color: var(--c-text); font-size: 15px; line-height: 1; padding: 0 3px; opacity: .4; cursor: pointer; }
+.slang__del { border: 0; background: none; color: var(--c-text); font-size: 15px; line-height: 1; padding: 0 4px; opacity: .4; cursor: pointer; }
 .slang__del:hover { opacity: 1; }
 .slang-analysis { display: flex; flex-direction: column; margin: 4px 0 22px; }
-.slang__an { display: grid; grid-template-columns: 120px 1fr; gap: 14px; padding: 8px 0; border-bottom: 1px solid var(--c-line); font-size: 13px; }
+.slang__an { display: grid; grid-template-columns: 120px 1fr auto; gap: 14px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--c-line); font-size: 13px; }
 .slang__an b { font-weight: 600; }
 .slang__an span { opacity: .7; cursor: text; border-bottom: 1px dashed transparent; }
 .slang__an span:hover { opacity: 1; border-bottom-color: var(--c-line); }

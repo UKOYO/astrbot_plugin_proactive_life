@@ -188,12 +188,19 @@
           <h2 class="sec__head"><span>群黑话</span><em class="hint">群里常说的高频词，聊天时自然带出</em></h2>
           <div class="slang__bar">
             <span id="slangMeta" class="hint">—</span>
-            <span>
+            <span class="slang__actions">
               <button type="button" class="act text-btn" id="slangAnalyze">立即解析</button>
-              <button type="button" class="act text-btn" id="slangClearAll">清空记录</button>
+              <button type="button" class="act text-btn" id="slangClearAll">清空全部</button>
             </span>
           </div>
           <div id="slangAnalysis" class="slang-analysis"></div>
+          <div class="slang__bulk" id="slangBulk" hidden>
+            <label class="slang__check-all">
+              <input type="checkbox" class="slang__chk" id="slangSelectAll" />
+              <span>全选</span>
+            </label>
+            <button type="button" class="act text-btn" id="slangDeleteSelected" disabled>删除已选</button>
+          </div>
           <div id="slangList" class="slang-list"></div>
         </section>
         <section class="sec">
