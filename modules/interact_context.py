@@ -1,12 +1,18 @@
-"""戳一戳/纯艾特的统一交互上下文（两种情景）。
+"""戳一戳/艾特的统一交互上下文（两种情景 + 自己近期发言回溯）。
 
 情景 A：用户先说话/发图（忘记 @），随后补一个 @ 或戳一戳
         → 触发时把「前面那几条」当上下文一起带进 LLM。
 情景 B：用户先 @ / 戳一戳，随后才发文字或图
         → 先记一个 pending 触发，等后续消息到了再合并发出。
+情景 C：机器人刚走表情包制作/入群欢迎/退群说明等插件管线发出过消息，
+        随后群友带字 @ 机器人 → 通过临时注入块把这段刚发生的动态补给 LLM，
+        避免模型只看到很久以前的对话历史而没头没尾乱接话。
 
-设计：纯状态机，不注册事件钩子、不直接调 LLM；由 on_poke_event 驱动。
+设计：纯状态机，不注册事件钩子、不直接调 LLM；由 main.py 事件钩子驱动。
 图片同时带 url（gif/webp 都支持，交给宿主模型处理）。
+窗口里同时按时间序收「群友说的」和「机器人自己刚发出去的」（role="self"）——
+表情包制作、入群欢迎、退群通知、主动插话这类自己做的事，被戳/被 @ 时
+要能被模型看见。
 """
 
 from __future__ import annotations
@@ -16,6 +22,9 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
+#: 带字 @ 触发时的临时注入块幂等标记（不落盘、不影响 system_prompt 缓存）
+RECENT_ECHO_MARKER = "【本群刚才的动态】"
+
 
 @dataclass
 class InteractItem:
@@ -23,9 +32,16 @@ class InteractItem:
     text: str
     image_urls: list[str] = field(default_factory=list)
     at: float = field(default_factory=time.time)
+    #: "user" = 群友/用户说的，"self" = 机器人自己刚发出去的
+    role: str = "user"
+    #: 群友昵称（可选，空串时不强行拼前缀）
+    sender_name: str = ""
 
     def has_content(self) -> bool:
         return bool(self.text.strip() or self.image_urls)
+
+    def is_self(self) -> bool:
+        return self.role == "self"
 
 
 @dataclass
@@ -39,14 +55,34 @@ class PendingTrigger:
 class InteractContext:
     """按群维护最近消息 + 待合并触发；有界、带过期。"""
 
-    def __init__(self, window: int = 6, ttl: float = 20.0) -> None:
+    def __init__(
+        self,
+        window: int = 6,
+        ttl: float = 20.0,
+        *,
+        self_ttl: float | None = None,
+    ) -> None:
         self._window = max(2, int(window))
         self._ttl = max(3.0, float(ttl))
+        self._self_ttl: float | None = (
+            max(3.0, float(self_ttl)) if self_ttl is not None else None
+        )
         self._recent: dict[str, deque[InteractItem]] = {}
         self._pending: dict[str, PendingTrigger] = {}
 
+    def _item_ttl(self, item: InteractItem) -> float:
+        if item.is_self() and self._self_ttl is not None:
+            return max(self._ttl, self._self_ttl)
+        return self._ttl
+
     # ---- 配置热更新（面板改完立即生效，不用重载） ----
-    def update(self, *, window: int | None = None, ttl: float | None = None) -> None:
+    def update(
+        self,
+        *,
+        window: int | None = None,
+        ttl: float | None = None,
+        self_ttl: float | None = None,
+    ) -> None:
         if window is not None:
             w = max(2, int(window))
             if w != self._window:
@@ -55,27 +91,53 @@ class InteractContext:
                     self._recent[key] = deque(list(self._recent[key])[-w:], maxlen=w)
         if ttl is not None:
             self._ttl = max(3.0, float(ttl))
+        if self_ttl is not None:
+            self._self_ttl = max(3.0, float(self_ttl))
 
     # ---- 最近消息 ----
-    def observe(self, group: str, sender: str, text: str,
-                image_urls: list[str] | None = None) -> None:
+    def observe(
+        self,
+        group: str,
+        sender: str,
+        text: str,
+        image_urls: list[str] | None = None,
+        *,
+        role: str = "user",
+        sender_name: str = "",
+    ) -> None:
         key = str(group or "")
         if not key:
             return
         bucket = self._recent.setdefault(key, deque(maxlen=self._window))
         bucket.append(InteractItem(
-            sender=str(sender or ""), text=str(text or ""),
+            sender=str(sender or ""),
+            text=str(text or ""),
             image_urls=[str(u) for u in (image_urls or []) if u],
+            role="self" if role == "self" else "user",
+            sender_name=str(sender_name or "").strip(),
         ))
         self._expire(key)
 
-    def recent(self, group: str, seconds: float | None = None,
-               exclude_sender: str = "") -> list[InteractItem]:
+    def observe_self(self, group: str, text: str, bot_name: str = "") -> None:
+        """记录机器人自己刚发出去的一条（文本已是可读摘要，含图片/表情包占位）。
+
+        去重由上游 `modules.bot_echo.BotEchoLog` 负责：同一条消息会被协议端
+        tap 与 after_message_sent 各报一次，这里不再重复判断。
+        """
+        self.observe(group, bot_name, text, role="self", sender_name=bot_name)
+
+    def recent(
+        self,
+        group: str,
+        seconds: float | None = None,
+        exclude_sender: str = "",
+    ) -> list[InteractItem]:
         key = str(group or "")
-        limit = self._ttl if seconds is None else max(0.0, float(seconds))
+        explicit = None if seconds is None else max(0.0, float(seconds))
         now = time.time()
         out = []
         for it in self._recent.get(key, []):
+            limit = self._item_ttl(it) if explicit is None else explicit
             if now - it.at > limit:
                 continue
             if exclude_sender and it.sender == exclude_sender and not it.has_content():
@@ -108,10 +170,12 @@ class InteractContext:
         now = time.time()
         bucket = self._recent.get(key)
         if bucket:
-            while bucket and now - bucket[0].at > self._ttl:
-                bucket.popleft()
-        if not bucket:
-            self._recent.pop(key, None)
+            kept = [it for it in bucket if now - it.at <= self._item_ttl(it)]
+            if kept:
+                if len(kept) != len(bucket):
+                    self._recent[key] = deque(kept[-self._window :], maxlen=self._window)
+            else:
+                self._recent.pop(key, None)
         p = self._pending.get(key)
         if p and now - p.at > self._ttl:
             self._pending.pop(key, None)
@@ -125,27 +189,104 @@ class InteractContext:
             self._pending.clear()
 
 
-def build_prompt(kind: str, trigger: PendingTrigger | None,
-                 context_items: list[InteractItem]) -> tuple[str, list[str]]:
+def _format_item_line(
+    it: InteractItem,
+    *,
+    me: str,
+    trigger: PendingTrigger | None = None,
+) -> str:
+    """把单条 InteractItem 渲染为上下文行（无内容返回空串）。"""
+    body = it.text.strip()[:200]
+    if not body and it.image_urls:
+        body = "[图片]"
+    if not body:
+        return ""
+    if it.is_self():
+        return f"- {me}：{body}"
+    same = bool(trigger and it.sender and it.sender == trigger.sender)
+    if it.sender_name:
+        tag = f"{it.sender_name}（同一个人）" if same else it.sender_name
+        return f"- {tag}：{body}"
+    prefix = "（同一个人）" if same else ""
+    return f"- {prefix}{body}"
+
+
+def build_prompt(
+    kind: str,
+    trigger: PendingTrigger | None,
+    context_items: list[InteractItem],
+    bot_name: str = "",
+) -> tuple[str, list[str]]:
     """把触发 + 上下文拼成 prompt 与图片列表。
 
     返回 (prompt, image_urls)。图片去重、保序。
+
+    上下文按时间序排，群友消息以昵称开头，机器人自己刚发的标成「我」——
+    否则模型会把自己发过的表情包/欢迎语当成群友说的，接话就串台。
     """
     action = "刚被用户戳了一下" if kind == "poke" else "用户刚 @ 了你但没说别的"
-    lines = [f"{action}，结合下面的上下文自然回应一句（不要复述，不要说'你刚才说了'）："]
+    lines = [
+        f"{action}，结合下面的上下文自然回应一句（不要复述，不要说'你刚才说了'）：",
+        "（标「我」的是你自己刚才发出去的，别当成群友说的）",
+    ]
     images: list[str] = []
     seen: set[str] = set()
+    has_context = False
+    me = f"我（{bot_name}）" if bot_name and bot_name != "我" else "我"
     for it in context_items[-6:]:
-        prefix = "（同一个人）" if trigger and it.sender == trigger.sender else ""
-        if it.text.strip():
-            lines.append(f"- {prefix}{it.text.strip()[:200]}")
+        line = _format_item_line(it, me=me, trigger=trigger)
+        if line:
+            lines.append(line)
+            has_context = True
         for u in it.image_urls:
             if u not in seen:
                 seen.add(u)
                 images.append(u)
-    if len(lines) == 1 and not images:
+                has_context = True
+    if not has_context and not images:
         lines.append("- （没有更多上下文，就自然打个招呼）")
     return "\n".join(lines), images
+
+
+def build_recent_echo_block(
+    context_items: list[InteractItem],
+    *,
+    bot_name: str = "",
+    current_prompt: str = "",
+    max_items: int = 6,
+) -> str:
+    """为群聊正常带字 @ 回复拼出「本群刚才的动态」临时块。
+
+    只在窗口里确实有「机器人自己刚发出的消息」（例如表情包制作、入群欢迎、
+    退群通知、主动插话等不进对话历史的内容）时生成；平时没自己发言返回空串，
+    不给常规对话徒增噪音。
+    """
+    items = list(context_items or [])
+    if not any(it.is_self() for it in items):
+        return ""
+    cur = " ".join(str(current_prompt or "").split())
+    # 末尾如果刚好是当前正在回复的这条用户消息，剔除避免和本次提问重复
+    if items and not items[-1].is_self() and cur:
+        tail = " ".join(items[-1].text.split())
+        if tail and (tail == cur or cur.endswith(tail)):
+            items = items[:-1]
+    if not any(it.is_self() for it in items):
+        return ""
+    me = f"我（{bot_name}）" if bot_name and bot_name != "我" else "我"
+    cap = max(2, int(max_items))
+    rendered: list[str] = []
+    for it in items[-cap:]:
+        line = _format_item_line(it, me=me)
+        if line:
+            rendered.append(line)
+    if not rendered:
+        return ""
+    header = (
+        f"{RECENT_ECHO_MARKER}（供衔接上下文参考，不要复述；标「{me}」的是你刚才"
+        "在群里发出的消息——表情包制作、入群欢迎、退群通知等插件消息不会出现在"
+        "对话历史里，被问起时以此为准，别扯回很久以前的话题）"
+    )
+    return "\n".join([header, *rendered])
 
 
 def is_pure_at(messages: list[Any], bot_id: str = "") -> bool:

@@ -148,10 +148,18 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             logger.debug("proactive_life | 人物档案初始化失败: %s", e)
             self.person_memory = None
         from .modules.interact_context import InteractContext
+        _interact_ttl = float(self.cfg.get("戳一戳_上下文秒数", 20) or 20)
         self.interact_ctx = InteractContext(
             window=int(self.cfg.get("戳一戳_上下文条数", 6) or 6),
-            ttl=float(self.cfg.get("戳一戳_上下文秒数", 20) or 20),
+            ttl=_interact_ttl,
+            self_ttl=max(_interact_ttl, 90.0),
         )
+        # 机器人自己发言的采集：戳/艾特上下文里要带上「我刚说了什么」，
+        # 否则别的插件走管线发过表情包/欢迎语之后被戳，模型完全不知情。
+        from .modules.bot_echo import BotEchoLog, BotSendTap
+
+        self.bot_echo = BotEchoLog(on_record=self._collect_self_speech)
+        self.bot_echo_tap = BotSendTap(self.bot_echo.record)
         # 主动私聊/追问目标过滤：黑名单命中则跳过。
         # 注意：这里必须在 lambda 内部实时读配置，否则面板开关不会生效。
         self.private_h.is_target_blocked = lambda uid: (
@@ -213,13 +221,98 @@ class ProactiveLifePlugin(Star, RhythmMixin):
 
         return module_enabled(self.cfg, name)
 
+    def _collect_self_speech(self, group: str, text: str) -> None:
+        """把机器人刚发出的一条（已去重）收进戳/艾特上下文，标记为自己说的。"""
+        if not group or not str(text or "").strip():
+            return
+        if not self._module_on("戳一戳"):
+            return
+        if not bool(self.cfg.get("戳一戳_收录自己发言", True)):
+            return
+        ctx = getattr(self, "interact_ctx", None)
+        if ctx is None:
+            return
+        try:
+            bot_name = self.group_h._bot_name()
+        except Exception:  # noqa: BLE001
+            bot_name = ""
+        ctx.observe_self(group, text, bot_name=bot_name)
 
+    def _ensure_echo_tap(self, event: AstrMessageEvent | None = None) -> None:
+        """确保协议端出站 tap 已挂上（平台热插拔时不至于漏采自己说的话）。"""
+        tap = getattr(self, "bot_echo_tap", None)
+        if tap is None:
+            return
+        bots = []
+        try:
+            bots.append(getattr(event, "bot", None))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            for inst in getattr(self.context.platform_manager, "platform_insts", []) or []:
+                bots.append(getattr(inst, "bot", None))
+        except Exception:  # noqa: BLE001 - 拿不到平台列表就算了，靠事件里的 bot
+            pass
+        for bot in bots:
+            if bot is None:
+                continue
+            try:
+                tap.install(bot)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("proactive_life | 出站 tap 挂载失败: %s", e)
 
+    def _observe_group_interact(self, event: AstrMessageEvent) -> None:
+        """旁路记录本群最近消息到 interact_ctx（幂等，防止下游插件 stop_event 导致漏采）。"""
+        ctx = getattr(self, "interact_ctx", None)
+        if ctx is None or not self._module_on("戳一戳"):
+            return
+        try:
+            if event.get_extra("_pl_interact_observed"):
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        gid = str(getattr(event, "get_group_id", lambda: "")() or "")
+        if not gid:
+            return
+        try:
+            from .modules.interact_context import is_pure_at
 
+            bot_id = str(getattr(event, "get_self_id", lambda: "")() or "")
+            msgs = list(getattr(event, "get_messages", lambda: [])() or [])
+            if is_pure_at(msgs, bot_id):
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from .debounce import MessageExtractor
+
+            item = MessageExtractor(filter_stickers=False).extract(
+                event, enable_emotion_split=False
+            )
+            text = item.text or str(getattr(event, "message_str", "") or "")
+            images = list(item.image_urls or [])
+            sender_id = str(getattr(event, "get_sender_id", lambda: "")() or "")
+            sender_name = str(getattr(event, "get_sender_name", lambda: "")() or "")
+            if text.strip() or images:
+                ctx.observe(
+                    gid,
+                    sender_id,
+                    text,
+                    images,
+                    sender_name=sender_name,
+                )
+            try:
+                event.set_extra("_pl_interact_observed", True)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as e:  # noqa: BLE001
+            logger.debug("proactive_life | 互动上下文采集异常: %s", e)
 
     async def initialize(self):
         self._stop_event.clear()
         self._last_macro_tick = time.time()
+        # 出站 tap：一次挂上，之后机器人自己发的任何群消息都能进戳/艾特上下文
+        self._ensure_echo_tap()
         # 角色身分：按所选 AstrBot 人设读取，并加载插件专用提示词
         await self._load_persona()
         self._main_loop_task = asyncio.create_task(self._coordinator_loop())
@@ -274,6 +367,13 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         # 节奏补发任务同样纳入终止清理
         try:
             self.cancel_rhythm_tasks()
+        except Exception:
+            pass
+        # 卸掉协议端出站 tap，别把壳留在别人家的 client 上
+        try:
+            tap = getattr(self, "bot_echo_tap", None)
+            if tap is not None:
+                tap.uninstall_all()
         except Exception:
             pass
         logger.info("proactive_life | 自主生活与主动中枢已停止")
@@ -388,6 +488,10 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         if self._module_on("黑名单") and self.blacklist.is_blacklisted_event(event):
             silence_event(event, self.blacklist)
             return
+        # 最高优先级顺手挂载出站 tap 并采集互动上下文，
+        # 即使下游插件（表情包制作/指令插件等）随后 stop_event 也不会漏采触发消息。
+        self._ensure_echo_tap(event)
+        self._observe_group_interact(event)
         if not self._debounce_on("group"):
             return
         await self._debounce_handle(event, "group")
@@ -533,10 +637,54 @@ class ProactiveLifePlugin(Star, RhythmMixin):
                 motive=motive_hint, session_key=session_key,
                 person=person_block,
             )
-            if not block:
-                return
-            if inject_life_state(req, block):
+            if block and inject_life_state(req, block):
                 logger.debug("proactive_life | 已注入当前生活状态（%d 字）", len(block))
+
+            # 群聊带字 @ 兜底：若刚才通过表情包制作、入群欢迎、退群通知等插件管线
+            # 发过消息，这些消息不进 conversation.history；把近期动态临时注给模型，
+            # 避免有人 @ 追问时对着很久以前的旧历史没头没尾乱回。
+            # （戳一戳 / 纯艾特已通过 build_prompt 带过上下文，靠 _poke_trigger 跳过）
+            try:
+                is_group = not bool(event.is_private_chat())
+                is_poke = bool(event.get_extra("_poke_trigger"))
+                gid_echo = str(getattr(event, "get_group_id", lambda: "")() or "")
+                ctx = getattr(self, "interact_ctx", None)
+                if (
+                    is_group
+                    and not is_poke
+                    and gid_echo
+                    and ctx is not None
+                    and self._module_on("戳一戳")
+                    and bool(self.cfg.get("戳一戳_收录自己发言", True))
+                ):
+                    from .life_inject import inject_temp_part
+                    from .modules.interact_context import (
+                        RECENT_ECHO_MARKER,
+                        build_recent_echo_block,
+                    )
+
+                    items = ctx.recent(gid_echo)
+                    cur_prompt = str(
+                        getattr(req, "prompt", "")
+                        or getattr(event, "message_str", "")
+                        or ""
+                    )
+                    try:
+                        bname = self.group_h._bot_name()
+                    except Exception:  # noqa: BLE001
+                        bname = ""
+                    echo_block = build_recent_echo_block(
+                        items,
+                        bot_name=bname,
+                        current_prompt=cur_prompt,
+                    )
+                    if echo_block and inject_temp_part(req, echo_block, RECENT_ECHO_MARKER):
+                        logger.debug(
+                            "proactive_life | 已注入本群刚才的动态（%d 字）",
+                            len(echo_block),
+                        )
+            except Exception as e:  # noqa: BLE001
+                logger.debug("proactive_life | 群近期动态注入失败，本次跳过: %s", e)
         except Exception as e:  # noqa: BLE001 - 注入失败不能影响正常回复
             logger.debug(f"proactive_life | 生活状态注入异常，本次跳过: {e}")
 
@@ -579,21 +727,31 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             res = event.get_result()
             if not res:
                 return
-            txt = res.get_plain_text() if hasattr(res, "get_plain_text") else ""
-            if not txt:
-                return
+            chain = list(getattr(res, "chain", None) or [])
+            plain = res.get_plain_text() if hasattr(res, "get_plain_text") else ""
+            txt = str(plain or "").strip()
+            # 图/表情包这类没有正文本的结果也要留个可读摘要，否则模型
+            # 不知道自己刚发过图（表情包制作就是这条路径）
+            from .modules.bot_echo import summarize_components
+
+            summary = summarize_components(chain) if chain else txt
 
             if event.is_private_chat():
-                if not self._module_on("私聊"):
+                if not self._module_on("私聊") or not txt:
                     return
                 uid = str(event.get_sender_id() or "")
                 self.private_h.record_bot_message(uid, txt)
-            else:
-                if not self._module_on("群聊"):
-                    return
-                # 记录群聊发言，激活接话时间窗口
-                origin = event.unified_msg_origin
-                self.group_h.record_bot_group_message(origin, txt)
+                return
+            # 群聊：自己发出的东西先喂给戳/艾特上下文（协议端 tap 已发过一次的会去重）
+            gid = str(event.get_group_id() or "")
+            echo = getattr(self, "bot_echo", None)
+            if echo is not None and gid and summary:
+                echo.record(gid, summary, media=not txt)
+            if not self._module_on("群聊") or not txt:
+                return
+            # 记录群聊发言，激活接话时间窗口
+            origin = event.unified_msg_origin
+            self.group_h.record_bot_group_message(origin, txt)
         except Exception as e:
             logger.debug(f"proactive_life | after_message_sent 记录异常: {e}")
 
@@ -654,6 +812,8 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         if (not self._module_on("群聊") and not self._module_on("黑话")
                 and not self._module_on("戳一戳")):
             return
+        # 顺手把出站 tap 挂到本事件的协议端上（平台热插拔/晚加载时兜底）
+        self._ensure_echo_tap(event)
         # 人物档案（群聊只写公开字段：称呼、兴趣、最近话题）
         try:
             _pm = getattr(self, "person_memory", None)
@@ -688,20 +848,13 @@ class ProactiveLifePlugin(Star, RhythmMixin):
                 )
             except Exception as e:  # noqa: BLE001
                 logger.debug("proactive_life | 群黑话采集异常: %s", e)
-        # 戳一戳/纯艾特的上下文采集：记录本群最近消息（文字+图片）
+        # 戳一戳/纯艾特的上下文采集：记录本群最近消息（文字+图片），幂等防重
         ctx = getattr(self, "interact_ctx", None)
         gid = str(event.get_group_id() or "")
         pending_hit = None
         if ctx and gid and self._module_on("戳一戳"):
             try:
-                from .debounce import MessageExtractor
-
-                item = MessageExtractor(filter_stickers=False).extract(
-                    event, enable_emotion_split=False
-                )
-                ctx.observe(gid, str(event.get_sender_id() or ""),
-                            item.text or str(getattr(event, "message_str", "") or ""),
-                            list(item.image_urls or []))
+                self._observe_group_interact(event)
                 # 情景 B：前面已戳/艾特，这条才来 → 合并发出
                 if bool(self.cfg.get("戳一戳_后续合并", True)):
                     pending_hit = ctx.pop_pending(gid)
@@ -709,7 +862,11 @@ class ProactiveLifePlugin(Star, RhythmMixin):
                     items = ctx.recent(gid)
                     from .modules.interact_context import build_prompt
 
-                    prompt, images = build_prompt(pending_hit.kind, pending_hit, items)
+                    prompt, images = build_prompt(
+                        pending_hit.kind, pending_hit, items,
+                        bot_name=self.group_h._bot_name(),
+                    )
+                    event.set_extra("_poke_trigger", True)
                     req = event.request_llm(prompt=prompt)
                     if images:
                         existing = list(getattr(req, "image_urls", None) or [])
@@ -1086,7 +1243,7 @@ class ProactiveLifePlugin(Star, RhythmMixin):
             (win, ttl, min_hits, re_th, re_iv, cd_p, cd_g) = sig
             ctx = getattr(self, "interact_ctx", None)
             if ctx is not None:
-                ctx.update(window=win, ttl=ttl)
+                ctx.update(window=win, ttl=ttl, self_ttl=max(ttl, 90.0))
             slang = getattr(self, "_slang", None)
             if slang is not None:
                 slang.update_config(min_hits=min_hits)
@@ -1111,9 +1268,11 @@ class ProactiveLifePlugin(Star, RhythmMixin):
         _sync_cfg = getattr(self, "_sync_runtime_state", None)
         if callable(_sync_cfg):
             _sync_cfg()
+        # 戳一戳事件里就带着协议端实例，顺手把出站 tap 挂上
+        self._ensure_echo_tap(event)
         try:
             from .modules.poke import PokeCooldown, is_poke_event
-            from .modules.interact_context import build_prompt, is_pure_at
+            from .modules.interact_context import PendingTrigger, build_prompt, is_pure_at
 
             hit, bot_id, sender, group = is_poke_event(event)
             kind = ""
@@ -1178,7 +1337,8 @@ class ProactiveLifePlugin(Star, RhythmMixin):
                 return
 
             # 情景 A：带着前面的上下文现在就回
-            prompt, images = build_prompt(kind, None, items)
+            trigger_ref = PendingTrigger(kind=kind, sender=sender, group=group)
+            prompt, images = build_prompt(kind, trigger_ref, items, bot_name=self.group_h._bot_name())
             req = event.request_llm(prompt=prompt)
             if images:
                 try:
