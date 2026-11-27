@@ -48,7 +48,16 @@
     <h1 class="siteHeader__title">自主<br />生活</h1>
     <p class="siteHeader__label">中枢观测 · 面板</p>
     <nav class="siteHeader__nav" id="tabs" aria-label="面板分区">
-      <ol>
+      <span class="nav-frame__corner nav-frame__corner--tl" aria-hidden="true"></span>
+      <span class="nav-frame__corner nav-frame__corner--tr" aria-hidden="true"></span>
+      <span class="nav-frame__corner nav-frame__corner--bl" aria-hidden="true"></span>
+      <span class="nav-frame__corner nav-frame__corner--br" aria-hidden="true"></span>
+      <div class="nav-frame__head" aria-hidden="true">
+        <span>INDEX</span>
+        <span id="navIndexMeta">01 / 13</span>
+      </div>
+      <div class="nav-frame__scroll" id="navScroll">
+        <ol>
         <li data-tab="overview" class="is-selected"><span class="_dot">●</span><span class="_text text-btn">总览</span></li>
 
         <li class="nav__group" aria-hidden="true">互动</li>
@@ -68,7 +77,9 @@
         <li data-tab="debounce"><span class="_dot">●</span><span class="_text text-btn">防抖</span></li>
         <li data-tab="identity"><span class="_dot">●</span><span class="_text text-btn">身份</span></li>
         <li data-tab="context"><span class="_dot">●</span><span class="_text text-btn">上下文</span></li>
-      </ol>
+        </ol>
+      </div>
+      <div class="nav-frame__rail" id="navRail" aria-hidden="true"><i id="navThumb"></i></div>
     </nav>
     <div class="pulse">
       <span class="pulse__dot" id="loopDot" data-state="unknown"></span>

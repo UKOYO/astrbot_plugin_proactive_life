@@ -405,6 +405,40 @@
     update();
   }
 
+  let updateNavFrameMetrics = () => {};
+
+  function initNavFrame() {
+    const nav = document.getElementById("tabs");
+    const scroller = document.getElementById("navScroll");
+    const thumb = document.getElementById("navThumb");
+    if (!nav || !scroller || !thumb) return;
+
+    function update() {
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      const scrollable = max > 2;
+      nav.classList.toggle("is-scrollable", scrollable);
+      scroller.classList.toggle("is-fade-top", scrollable && scroller.scrollTop > 4);
+      scroller.classList.toggle("is-fade-bottom", scrollable && scroller.scrollTop < max - 4);
+      if (!scrollable) return;
+      const ratio = scroller.clientHeight / scroller.scrollHeight;
+      const thumbPct = Math.max(14, Math.min(100, ratio * 100));
+      const progress = max > 0 ? scroller.scrollTop / max : 0;
+      const topPct = progress * (100 - thumbPct);
+      thumb.style.height = `${thumbPct.toFixed(1)}%`;
+      thumb.style.top = `${topPct.toFixed(1)}%`;
+    }
+
+    updateNavFrameMetrics = update;
+    scroller.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update, { passive: true });
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(update);
+      ro.observe(scroller);
+      if (scroller.firstElementChild) ro.observe(scroller.firstElementChild);
+    }
+    requestAnimationFrame(update);
+  }
+
   // ------------------------------------------------------------ 工具
 
   function esc(value) {
@@ -1668,6 +1702,7 @@
     } catch (err) {
       /* 无痕模式下存不了就算了 */
     }
+    requestAnimationFrame(() => updateNavFrameMetrics());
   }
 
   function stepZoom(direction) {
@@ -1702,11 +1737,27 @@
 
   function setTab(name) {
     const tab = TABS.includes(name) ? name : "overview";
-    document.querySelectorAll("#tabs li").forEach((li) => {
+    const tabItems = Array.from(document.querySelectorAll("#tabs li[data-tab]"));
+    let activeIdx = 0;
+    let activeEl = null;
+    tabItems.forEach((li, i) => {
       const active = li.dataset.tab === tab;
       li.classList.toggle("is-selected", active);
       li.setAttribute("aria-selected", active ? "true" : "false");
+      if (active) {
+        activeIdx = i;
+        activeEl = li;
+      }
     });
+    const meta = document.getElementById("navIndexMeta");
+    if (meta && tabItems.length) {
+      const cur = String(activeIdx + 1).padStart(2, "0");
+      const total = String(tabItems.length).padStart(2, "0");
+      meta.textContent = `${cur} / ${total}`;
+    }
+    if (activeEl && typeof activeEl.scrollIntoView === "function") {
+      activeEl.scrollIntoView({ block: "nearest" });
+    }
     document.querySelectorAll(".panel-view").forEach((view) => {
       view.classList.toggle("is-active", view.dataset.view === tab);
     });
@@ -1822,6 +1873,7 @@
     initParticleBackground();
     initThemeSwitch();
     initScrollWatch();
+    initNavFrame();
     bind();
     try {
       bridge = await getBridge();
