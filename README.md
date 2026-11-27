@@ -122,7 +122,7 @@ astrbot_plugin_proactive_life/
 │   ├── think_filtering.py   # 思考过程过滤 + bare_thinking.py
 │   └── prose_polish.py      # 八股文清洗 + polish_rules / polish_ai_rules / polish_bagu
 ├── pages/panel/             # WebUI 中枢面板前端（HTML / JS / CSS）
-└── tests/                   # 自动化回归测试套件（199 passed）
+└── tests/                   # 自动化回归测试套件（200 passed）
 ```
 
 ### 数据持久化
@@ -160,6 +160,8 @@ astrbot_plugin_proactive_life/
 
 ## 更新日志
 
+- **v1.5.1**
+  - **非阻塞天气请求**：`modules/weather.py` 新增 `get_weather_async` / `weather_prompt_async`，通过 `asyncio.to_thread` 卸载 Open-Meteo 网络请求与缓存读写；`ScheduleGenerator.generate()` 改为异步调用，消除事件循环阻塞
 - **v1.5.0**
   - **全链路大融合**：正式整合黑名单准入、撤回取消、戳一戳、群聊跟读、真实天气穿搭、群黑话挖掘、跨会话人物记忆、情绪持久化、思考过滤、八股清洗与拟人说话方式引导，形成 14 模块一体化活人感中枢
   - **中枢面板升级**：扩展至 13 个分组分栏、10 项面板动作与 175 项四处对齐配置项，新增 11 项重叠插件冲突自动检测

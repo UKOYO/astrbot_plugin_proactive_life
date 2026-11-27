@@ -277,12 +277,12 @@ class ScheduleGenerator:
         except Exception:
             return ""
 
-    def _weather_text(self) -> str:
-        """今日天气，供穿搭/活动贴合真实天气；失败返回空串。"""
+    async def _weather_text(self) -> str:
+        """今日天气，供穿搭/活动贴合真实天气（异步非阻塞）；失败返回空串。"""
         try:
-            from .modules.weather import weather_prompt
+            from .modules.weather import weather_prompt_async
 
-            return weather_prompt(self.cfg)
+            return await weather_prompt_async(self.cfg)
         except Exception:  # noqa: BLE001
             return ""
 
@@ -465,7 +465,7 @@ class ScheduleGenerator:
                 "history_schedules": self._history_text(d.date()),
                 "recent_chats": await self._recent_chats(umo),
                 "recent_explorations": self._recent_explorations(),
-                "weather": self._weather_text(),
+                "weather": await self._weather_text(),
                 **picks,
             }
             prompt = self.build_prompt(ctx, str(extra or "").strip())

@@ -112,7 +112,7 @@ class _LiveConfig:
     "astrbot_plugin_proactive_life",
     "keyou",
     "自主生活与主动中枢",
-    "1.5.0",
+    "1.5.1",
     "一体化活人感中枢：贯通入站准入、主动生活、天气穿搭日程、人物情绪与群黑话感知、出站清洗与真人节奏",
 )
 class ProactiveLifePlugin(Star, RhythmMixin):

@@ -6,6 +6,7 @@ Open-Meteo 零 API Key；每日缓存到 safe_io，断网/超时不阻断调用�
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import urllib.parse
@@ -101,25 +102,49 @@ def get_weather(city: str, *, force: bool = False) -> dict:
         return entry if isinstance(entry, dict) else {}
 
 
+
+def _format_weather(city: str, info: dict) -> str:
+    if not info:
+        return ""
+    hi, lo = info.get("temp_max"), info.get("temp_min")
+    parts = [f"当地（{city}）今日天气"]
+    if hi is not None and lo is not None:
+        parts.append(f"最高 {hi}°C / 最低 {lo}°C")
+    code = info.get("weather_code")
+    if code is not None:
+        parts.append(f"天气代码 {code}")
+    return "，".join(parts)
+
+
+async def get_weather_async(city: str, *, force: bool = False) -> dict:
+    """异步取当日天气：通过 asyncio.to_thread 卸载同步网络与文件 I/O，不阻塞事件循环。"""
+    return await asyncio.to_thread(get_weather, city, force=force)
+
+
 def weather_prompt(cfg: Any) -> str:
-    """给日程生成用的简短天气描述；关闭/失败返回空串。"""
+    """给日程生成用的简短天气描述（同步版）；关闭/失败返回空串。"""
     try:
         if not bool(cfg.get("模块_天气", True)):
             return ""
         city = str(cfg.get("天气_城市", "") or "").strip()
         if not city:
             return ""
-        info = get_weather(city)
-        if not info:
+        return _format_weather(city, get_weather(city))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("%s | 天气提示生成失败: %s", _LOG, exc)
+        return ""
+
+
+async def weather_prompt_async(cfg: Any) -> str:
+    """给异步日程生成用的简短天气描述（非阻塞版）；关闭/失败返回空串。"""
+    try:
+        if not bool(cfg.get("模块_天气", True)):
             return ""
-        hi, lo = info.get("temp_max"), info.get("temp_min")
-        parts = [f"当地（{city}）今日天气"]
-        if hi is not None and lo is not None:
-            parts.append(f"最高 {hi}°C / 最低 {lo}°C")
-        code = info.get("weather_code")
-        if code is not None:
-            parts.append(f"天气代码 {code}")
-        return "，".join(parts)
+        city = str(cfg.get("天气_城市", "") or "").strip()
+        if not city:
+            return ""
+        info = await get_weather_async(city)
+        return _format_weather(city, info)
     except Exception as exc:  # noqa: BLE001
         logger.debug("%s | 天气提示生成失败: %s", _LOG, exc)
         return ""

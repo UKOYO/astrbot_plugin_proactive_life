@@ -53,10 +53,31 @@ class TestWeatherFallback(unittest.TestCase):
             w.urllib.request.urlopen = old
 
     def test_schedule_weather_placeholder_safe(self):
+        import asyncio
+
         cfg = {"模块_天气": False}
         g = schedule_gen.ScheduleGenerator.__new__(schedule_gen.ScheduleGenerator)
         g.cfg = cfg
-        self.assertEqual(g._weather_text(), "")
+        self.assertEqual(asyncio.run(g._weather_text()), "")
+
+    def test_weather_prompt_async_uses_to_thread(self):
+        import asyncio
+        from unittest.mock import patch
+        import astrbot_plugin_proactive_life.modules.weather as w
+
+        called = []
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            called.append((fn.__name__, args))
+            return {"city": "深圳", "temp_max": 24, "temp_min": 18, "weather_code": 1}
+
+        g = schedule_gen.ScheduleGenerator.__new__(schedule_gen.ScheduleGenerator)
+        g.cfg = {"模块_天气": True, "天气_城市": "深圳"}
+        with patch.object(w.asyncio, "to_thread", side_effect=fake_to_thread):
+            out = asyncio.run(g._weather_text())
+        self.assertEqual(called, [("get_weather", ("深圳",))])
+        self.assertIn("深圳", out)
+        self.assertIn("24°C", out)
 
 
 class TestConflictDetection(unittest.TestCase):
