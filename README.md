@@ -122,7 +122,7 @@ astrbot_plugin_proactive_life/
 │   ├── think_filtering.py   # 思考过程过滤 + bare_thinking.py
 │   └── prose_polish.py      # 八股文清洗 + polish_rules / polish_ai_rules / polish_bagu
 ├── pages/panel/             # WebUI 中枢面板前端（HTML / JS / CSS）
-└── tests/                   # 自动化回归测试套件（200 passed）
+└── tests/                   # 自动化回归测试套件（203 passed）
 ```
 
 ### 数据持久化
@@ -160,6 +160,8 @@ astrbot_plugin_proactive_life/
 
 ## 更新日志
 
+- **v1.5.2**
+  - **八股清洗误伤收紧**：修复 `polish_ai_rules.py` 7 条过宽静态正则，防止「三十分钟 / 十分之一 / 满分十分」被误改为「很」，避免「我们一起…」「希望你…顺利」「都可以说」「话都说白了」被误删，并将「不仅…而且…」「既要…又要…还要…」由整句删除改为保留语义主干；新增误伤防护回归测试（203 passed）
 - **v1.5.1**
   - **非阻塞天气请求**：`modules/weather.py` 新增 `get_weather_async` / `weather_prompt_async`，通过 `asyncio.to_thread` 卸载 Open-Meteo 网络请求与缓存读写；`ScheduleGenerator.generate()` 改为异步调用，消除事件循环阻塞
 - **v1.5.0**

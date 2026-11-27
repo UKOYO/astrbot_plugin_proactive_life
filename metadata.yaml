@@ -2,7 +2,7 @@ name: astrbot_plugin_proactive_life
 display_name: 自主生活与主动中枢
 desc: 一体化活人感中枢：贯通入站准入（黑名单/防抖/撤回取消/戳一戳/跟读）、主动生活（私聊追问/群聊破冰插话/后台摸鱼/真实天气穿搭日程）、人物记忆与情绪黑话感知、以及出站清洗与真人分段节奏
 author: keyou
-version: 1.5.1
+version: 1.5.2
 logo: logo.png
 repo: https://github.com/UKOYO/astrbot_plugin_proactive_life
 astrbot_version: ">=4.0.0"

@@ -90,5 +90,54 @@ class TestOrphanTailCommaFix(unittest.TestCase):
         self.assertFalse(out.endswith("，"))
 
 
+
+
+class TestPolishFalsePositiveGuards(unittest.TestCase):
+    """防止 AI 八股静态正则误伤正常时间、数字和日常口语。"""
+
+    def _p(self):
+        from astrbot_plugin_proactive_life.modules.prose_polish import ProsePolisher
+
+        return ProsePolisher({"清AI八股": True, "演练模式": False})
+
+    def test_shifen_number_time_preserved(self):
+        p = self._p()
+        for text in (
+            "哟 整整三十分钟准时送达",
+            "等我十分钟就出门",
+            "只完成了十分之一",
+            "科目一考了九十分",
+            "现在十点十分了",
+            "满分十分我打九分",
+        ):
+            out, _, _ = p.polish(text)
+            self.assertEqual(out, text, f"数字/时间词被误改: {text} -> {out}")
+
+        out, _, _ = p.polish("这件事十分重要")
+        self.assertEqual(out, "这件事很重要")
+
+    def test_normal_daily_phrases_not_deleted(self):
+        p = self._p()
+        for text in (
+            "我们一起去吃火锅吧",
+            "希望你明天练车顺利",
+            "有什么事都可以说",
+            "话都说白了也没啥好藏的",
+        ):
+            out, _, _ = p.polish(text)
+            self.assertEqual(out, text, f"日常口语被误伤: {text} -> {out}")
+
+    def test_parallel_rules_preserve_content(self):
+        p = self._p()
+        out1, _, _ = p.polish("这家店不仅好吃，而且便宜。")
+        self.assertIn("好吃", out1)
+        self.assertIn("便宜", out1)
+
+        out2, _, _ = p.polish("既要上班，又要练车，还要写代码。")
+        self.assertIn("上班", out2)
+        self.assertIn("练车", out2)
+        self.assertIn("写代码", out2)
+
+
 if __name__ == "__main__":
     unittest.main()
