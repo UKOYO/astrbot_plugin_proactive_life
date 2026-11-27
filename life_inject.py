@@ -44,9 +44,18 @@ _STATUS_WORDS = (
     "上班", "下班", "加班", "上课", "放假", "周末", "休息",
 )
 _LOOK_WORDS = (
-    "穿什么", "穿啥", "穿搭", "衣服", "裙子", "外套", "打扮", "造型", "头发",
-    "发色", "瞳色", "眼睛", "长什么", "长相", "样子", "自拍", "照片", "好看吗",
+    "穿什么", "穿啥", "穿的", "穿搭", "衣服", "服装", "衣着", "套装",
+    "裙子", "裤子", "短裤", "牛仔裤", "外套", "鞋", "袜", "内衣",
+    "打扮", "造型", "ootd", "头发", "发色", "瞳色", "眼睛",
+    "长什么", "长相", "样子", "自拍", "全身照", "照片", "好看吗",
 )
+
+# 极短追问/索看句（如「看看」「发来」）：本身不含服装词，
+# 仅在最近 1~2 轮对话刚提过穿搭/日程时延续按需注入。
+_FOLLOWUP_SHORT_WORDS = (
+    "看看", "看下", "看一下", "发来", "发我", "给我看", "重发", "再发",
+)
+_FOLLOWUP_MAX_LEN = 10
 
 # 低信息量短句：这类消息没有明确话题，才适合把「可提起的心事」递给模型。
 # 有明确主题时塞心事，模型会把话题硬拐到心事上。
@@ -106,6 +115,7 @@ def build_life_state_block(
     person: str = "",
     user_text: str | None = None,
     slang: str = "",
+    context_hint: str = "",
 ) -> str:
     """拼出「当前生活状态」文本块；关掉或没有日程时返回空串。
 
@@ -149,6 +159,15 @@ def build_life_state_block(
         probe = str(user_text or "").strip().lower()
         want_state = _hit_any(probe, _STATUS_WORDS)
         want_look = _hit_any(probe, _LOOK_WORDS)
+        if (
+            not (want_state or want_look)
+            and len(probe) <= _FOLLOWUP_MAX_LEN
+            and _hit_any(probe, _FOLLOWUP_SHORT_WORDS)
+            and context_hint
+        ):
+            hint_probe = str(context_hint).strip().lower()
+            want_state = _hit_any(hint_probe, _STATUS_WORDS)
+            want_look = _hit_any(hint_probe, _LOOK_WORDS)
 
     now = now or datetime.datetime.now()
     if info is None:
@@ -493,6 +512,29 @@ def _fit_budget(parts: list[dict], budget: int) -> list[dict]:
     return parts
 
 
+def _recent_context_text(req: Any, limit: int = 2) -> str:
+    """提取 req.contexts 最近几条纯文本，用于极短追问（「看看」「发来」）延续判定。"""
+    contexts = getattr(req, "contexts", None)
+    if not isinstance(contexts, list) or not contexts:
+        return ""
+    texts: list[str] = []
+    for item in contexts[-max(1, limit):]:
+        if isinstance(item, dict):
+            content = item.get("content", "")
+            if isinstance(content, str) and content.strip():
+                texts.append(content.strip())
+            elif isinstance(content, list):
+                for part in content:
+                    t = _part_text(part).strip()
+                    if t:
+                        texts.append(t)
+        else:
+            content = getattr(item, "content", None)
+            if isinstance(content, str) and content.strip():
+                texts.append(content.strip())
+    return "\n".join(texts)
+
+
 def inject_passive_context(plugin: Any, event: Any, req: Any) -> None:
     """被动回复链路的一次性注入编排（说话方式 / 近期动态 / 生活状态）。
 
@@ -689,6 +731,7 @@ def inject_passive_context(plugin: Any, event: Any, req: Any) -> None:
         except Exception as e:  # noqa: BLE001
             _debug("群近期动态注入失败，本次跳过", e)
 
+        context_hint = _recent_context_text(req, limit=2)
         block = build_life_state_block(
             plugin.cfg,
             mood=getattr(plugin, "mood", None),
@@ -697,6 +740,7 @@ def inject_passive_context(plugin: Any, event: Any, req: Any) -> None:
             person=person_block,
             user_text=user_text,
             slang=slang_hint,
+            context_hint=context_hint,
         )
         if block:
             parts.append({
@@ -704,11 +748,29 @@ def inject_passive_context(plugin: Any, event: Any, req: Any) -> None:
                 "text": block, "name": "生活状态",
             })
 
-        # 统一预算裁剪后再注入（合计不超档位上限；auto 档按模型名自动选档）
-        for part in _fit_budget(parts, inject_budget(plugin.cfg, model_name)):
+        # 统一预算裁剪后再注入：常态按模型档位省流（300/600），
+        # 但用户主动按需召回穿搭/日程/此刻在做时，放宽到「生活状态_总字数上限」+核心说话规范，
+        # 避免刚取出来的穿搭细节又被尾部截断。
+        budget = inject_budget(plugin.cfg, model_name)
+        if block and (
+            "- 今日穿搭：" in block
+            or "- 今日日程：" in block
+            or "- 此刻在做：" in block
+        ):
+            try:
+                life_cap = max(
+                    _MIN_LIMIT,
+                    min(_MAX_LIMIT, int(_cfg_get(plugin.cfg, "生活状态_总字数上限", 900) or 900)),
+                )
+            except (TypeError, ValueError):
+                life_cap = 900
+            budget = max(budget, min(_MAX_LIMIT, life_cap + 250))
+
+        fitted = [p for p in _fit_budget(parts, budget) if str(p.get("text") or "")]
+        for idx, part in enumerate(fitted):
             text = str(part.get("text") or "")
-            if not text:
-                continue
+            if idx + 1 < len(fitted) and not text.endswith("\n"):
+                text = text + "\n"
             if not inject_temp_part(req, text, part["marker"]):
                 continue
             _debug(f"已注入{part['name']}（{len(text)} 字）")
